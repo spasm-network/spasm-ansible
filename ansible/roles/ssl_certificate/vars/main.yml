@@ -1,0 +1,12 @@
+---
+# ssl_domain: "{{ domain }}" (set in defaults/main.yml)
+# Accept full domains or bare labels. Operators normally set DOMAIN_NAME as example.com.
+# ssl_subdomains may contain either bare labels (www, api) or full domains (app.example.com).
+ssl_subdomains: [www, staging, media, forum]
+ssl_enable_http_to_https_redirect: true
+ssl_renewal_hour: 3
+ssl_cert_path: /etc/letsencrypt/live/{{ ssl_domain }}
+ssl_nginx_conf: /etc/nginx/sites-available/{{ nginx_site_name }}
+certbot_webroot: /var/www/html
+# Optional: explicit cert name; if not set we'll use the primary domain
+ssl_cert_name: "{{ ssl_domain }}"

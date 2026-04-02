@@ -1,0 +1,18 @@
+---
+# Default role vars
+# runtime: which container runtime to install. Supported: podman, docker (default: podman)
+runtime: podman
+
+# If non-null, will attempt to pin package version. Format is distro-specific.
+runtime_version: null
+
+# Whether to enable socket/service after install (default true)
+enable_socket: true
+
+# Path for a simple install audit log
+install_log_path: /var/log/container-runtime-install.json
+
+# NOTE about Docker packages:
+# - By default this role installs distro-packaged Docker (docker or docker.io).
+# - To install Docker's official packages from Docker's repo, add that repo
+#   in a separate task/role before calling this role.

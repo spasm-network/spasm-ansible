@@ -1,0 +1,9 @@
+---
+# Restart or reload the detected runtime unit when notified.
+- name: restart container runtime service
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ runtime_service }}"
+    state: restarted
+    enabled: yes
+  when: runtime_service is defined and runtime_service != ''

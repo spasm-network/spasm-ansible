@@ -1,0 +1,63 @@
+---
+- name: Fail early if app_clone_path is not defined
+  fail:
+    msg: "app_clone_path must be defined and non-empty"
+  when: app_clone_path is not defined or app_clone_path == ""
+
+- name: Fail early if no container runtime detected
+  fail:
+    msg: "No supported container runtime detected (podman/docker). Install podman or docker and re-run."
+  when: chosen_runtime == 'none'
+
+- name: Start podman socket for app user (rootless mode)
+  become: true
+  command: "systemctl --user --machine={{ owner }}@ start podman.socket"
+  register: socket_start
+  failed_when: false
+  changed_when: "'already running' not in (socket_start.stderr | default(''))"
+  when: chosen_runtime == 'podman'
+
+- name: Validate compose file (podman/docker)
+  become: true
+  become_user: "{{ owner }}"
+  command: |
+    bash -lc "cd {{ app_clone_path }} && {{ chosen_runtime }} compose config"
+  register: compose_config_check
+  failed_when: compose_config_check.rc != 0
+  changed_when: false
+  when: compose_validate_config
+
+- name: Pull images (this step might take a few minutes, so chill...)
+  become: true
+  become_user: "{{ owner }}"
+  command: |
+    bash -lc "cd {{ app_clone_path }} && {{ chosen_runtime }} compose pull"
+  register: compose_pull
+  failed_when: compose_pull.rc != 0
+  changed_when: false
+  when: compose_pull_images
+
+- name: Compose up - build and remove orphans as configured
+  become: true
+  become_user: "{{ owner }}"
+  command: |
+    bash -lc "cd {{ app_clone_path }} && {{ chosen_runtime }} compose up -d{% if compose_remove_orphans %} --remove-orphans{% endif %}{% if compose_build %} --build{% endif %}"
+  register: compose_up
+  failed_when: compose_up.rc != 0
+  changed_when: false
+
+- name: Populate run_summary facts for logging
+  set_fact:
+    run_summary: >-
+      {{ run_summary | combine({
+        'timestamp': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ'),
+        'chosen_runtime': chosen_runtime,
+        'pulled_images': (compose_pull_images | bool),
+        'compose_build': (compose_build | bool),
+        'compose_remove_orphans': (compose_remove_orphans | bool),
+        'compose_validation_performed': (compose_validate_config | bool),
+        'compose_config_rc': ((compose_config_check.rc if compose_config_check is defined else '')),
+        'compose_pull_rc': ((compose_pull.rc if compose_pull is defined else '')),
+        'compose_up_rc': ((compose_up.rc if compose_up is defined else ''))
+      }) }}
+  when: run_summary is defined and run_summary is mapping

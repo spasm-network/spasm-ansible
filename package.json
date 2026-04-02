@@ -1,0 +1,21 @@
+{
+  "name": "spasm-ansible",
+  "version": "1.0.0-alpha",
+  "description": "Tools to deploy and manage Spasm servers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spasm-network/spasm-ansible.git"
+  },
+  "keywords": [
+    "spasm",
+    "nostr",
+    "ethereum",
+    "social"
+  ],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/spasm-network/spasm-ansible/issues"
+  },
+  "homepage": "https://github.com/spasm-network/spasm-ansible#readme"
+}

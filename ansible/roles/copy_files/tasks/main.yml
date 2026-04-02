@@ -1,0 +1,128 @@
+---
+- name: Copy sshd config and ansible-related files to user and admin
+  set_fact:
+    copy_files_vars:
+      user_name: "{{ user_name }}"
+      admin_name: "{{ admin_name }}"
+      copy_ssh_keys_from_root_to_user: "{{ copy_ssh_keys_from_root_to_user }}"
+      copy_ssh_keys_from_root_to_admin: "{{ copy_ssh_keys_from_root_to_admin }}"
+      copy_ansible_from_root_to_user: "{{ copy_ansible_from_root_to_user }}"
+      copy_ansible_from_root_to_admin: "{{ copy_ansible_from_root_to_admin }}"
+
+- name: Normalize user_getent to dict
+  set_fact:
+    user_entry:
+      name: "{{ (user_getent.ansible_facts.getent_passwd[user_name][0] | default(user_name)) }}"
+      passwd: "{{ (user_getent.ansible_facts.getent_passwd[user_name][1] | default('')) }}"
+      uid: "{{ (user_getent.ansible_facts.getent_passwd[user_name][2] | default('')) }}"
+      gid: "{{ (user_getent.ansible_facts.getent_passwd[user_name][3] | default('')) }}"
+      gecos: "{{ (user_getent.ansible_facts.getent_passwd[user_name][4] | default('')) }}"
+      dir: "{{ (user_getent.ansible_facts.getent_passwd[user_name][4] | default('/home/' ~ user_name)) }}"
+      shell: "{{ (user_getent.ansible_facts.getent_passwd[user_name][5] | default('/bin/sh')) }}"
+
+- name: Normalize admin_getent to dict
+  set_fact:
+    admin_entry:
+      name: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][0] | default(admin_name)) }}"
+      passwd: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][1] | default('')) }}"
+      uid: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][2] | default('')) }}"
+      gid: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][3] | default('')) }}"
+      gecos: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][4] | default('')) }}"
+      dir: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][4] | default('/home/' ~ admin_name)) }}"
+      shell: "{{ (admin_getent.ansible_facts.getent_passwd[admin_name][5] | default('/bin/sh')) }}"
+
+- name: Get user home directory via getent
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ user_name }}"
+  register: user_getent
+
+- name: Get admin home directory via getent
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ admin_name }}"
+  register: admin_getent
+
+- name: Create user .ssh directory
+  ansible.builtin.file:
+    path: "{{ user_entry.dir }}/.ssh"
+    state: directory
+    owner: "{{ user_name }}"
+    group: "{{ user_name }}"
+    mode: '0700'
+  when: user_entry is defined and user_entry.dir is defined
+
+- name: Create admin .ssh directory
+  ansible.builtin.file:
+    path: "{{ admin_entry.dir }}/.ssh"
+    state: directory
+    owner: "{{ admin_name }}"
+    group: "{{ admin_name }}"
+    mode: '0700'
+  when: admin_entry is defined and admin_entry.dir is defined
+
+- name: Check if root authorized_keys exists
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: root_authorized_keys
+
+- name: Copy root authorized_keys to user if requested
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    dest: "{{ user_entry.dir }}/.ssh/authorized_keys"
+    owner: "{{ user_name }}"
+    group: "{{ user_name }}"
+    mode: '0600'
+    remote_src: yes
+  when:
+    - copy_ssh_keys_from_root_to_user | default(false) | bool
+    - root_authorized_keys.stat.exists | default(false)
+    - user_entry is defined
+    - user_entry.dir is defined
+
+- name: Copy root authorized_keys to admin if requested
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    dest: "{{ admin_entry.dir }}/.ssh/authorized_keys"
+    owner: "{{ admin_name }}"
+    group: "{{ admin_name }}"
+    mode: '0600'
+    remote_src: yes
+  when:
+    - copy_ssh_keys_from_root_to_admin | default(false) | bool
+    - root_authorized_keys.stat.exists | default(false)
+    - admin_entry is defined
+    - admin_entry.dir is defined
+
+- name: Check if /root/spasm-ansible exists
+  ansible.builtin.stat:
+    path: /root/spasm-ansible
+  register: root_spasm_ansible
+
+- name: Copy spasm-ansible to user if requested
+  ansible.builtin.copy:
+    src: /root/spasm-ansible/
+    dest: "{{ user_entry.dir }}/spasm-ansible/"
+    owner: "{{ user_name }}"
+    group: "{{ user_name }}"
+    mode: '0755'
+    remote_src: yes
+  when:
+    - copy_ansible_from_root_to_user | default(false) | bool
+    - root_spasm_ansible.stat.exists | default(false)
+    - user_entry is defined
+    - user_entry.dir is defined
+
+- name: Copy spasm-ansible to admin if requested
+  ansible.builtin.copy:
+    src: /root/spasm-ansible/
+    dest: "{{ admin_entry.dir }}/spasm-ansible/"
+    owner: "{{ admin_name }}"
+    group: "{{ admin_name }}"
+    mode: '0755'
+    remote_src: yes
+  when:
+    - copy_ansible_from_root_to_admin | default(false) | bool
+    - root_spasm_ansible.stat.exists | default(false)
+    - admin_entry is defined
+    - admin_entry.dir is defined

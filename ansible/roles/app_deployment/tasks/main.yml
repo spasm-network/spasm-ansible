@@ -1,0 +1,57 @@
+---
+- name: Ensure user's home directory exists
+  file:
+    path: "/home/{{ user_name }}"
+    state: directory
+    owner: "{{ owner }}"
+    group: "{{ group }}"
+    mode: "0755"
+
+- name: Fail if app_repo_url is not provided
+  fail:
+    msg: "app_repo_url must be provided to deploy an application"
+  when: app_repo_url is not defined or app_repo_url == ""
+
+- name: Fail if app_clone_path is not defined
+  fail:
+    msg: "app_clone_path must be defined and non-empty"
+  when: app_clone_path is not defined or app_clone_path == ""
+
+- name: Ensure logs directory exists on control machine and is writable
+  file:
+    path: "{{ logs_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+
+- name: Include clone repo task
+  include_tasks: clone_repo.yml
+
+- name: Include write .env task (idempotent merge)
+  include_tasks: write_env_file.yml
+
+- name: Include detect runtime task
+  include_tasks: detect_runtime.yml
+
+- name: Include compose lifecycle task
+  include_tasks: compose_lifecycle.yml
+
+- name: Include smoke test task
+  include_tasks: smoke_test.yml
+  when: host_port | int > 0
+
+- name: Debug message if host_port is 0 (smoke test skipped)
+  debug:
+    msg: "host_port is 0; smoke test skipped. Set host_port > 0 to enable port verification."
+  when: host_port | int == 0
+
+- name: Write run summary log (JSON) to control machine
+  copy:
+    dest: "{{ logs_file }}"
+    content: "{{ run_summary | to_nice_json }}"
+    mode: "0640"
+  delegate_to: localhost
+  run_once: true
+  when: run_summary is defined and run_summary is mapping
+

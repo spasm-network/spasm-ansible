@@ -1,0 +1,219 @@
+---
+- name: Ensure nginx is running and active (prerequisite)
+  service:
+    name: nginx
+    state: started
+    enabled: yes
+  register: nginx_status
+  failed_when: nginx_status.state != "started"
+
+- name: Assert ssl_domain is defined and looks like a domain
+  assert:
+    that:
+      - ssl_domain is defined
+      - ssl_domain | regex_search('^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$')
+    fail_msg: "ssl_domain must be set to a valid domain (example: example.com or app.example.com)"
+
+- name: Build final certbot domain list (handles bare labels and full domains)
+  set_fact:
+    certbot_domains: >-
+      {{
+        ([ssl_domain] +
+          (ssl_subdomains | default([])
+            | map('regex_replace', '^(?!.*\.)(.+)$', '\1.' + ssl_domain)
+            | list)
+        ) | unique
+      }}
+
+- name: Ensure certbot binary exists (which certbot)
+  command: which certbot
+  register: certbot_path
+  failed_when: certbot_path.rc != 0
+  changed_when: false
+
+- name: Test nginx configuration before certbot
+  command: nginx -t
+  register: nginx_test_pre
+  failed_when: nginx_test_pre.rc != 0
+
+- name: Backup current nginx config before certbot edits
+  copy:
+    src: "{{ ssl_nginx_conf }}"
+    dest: "{{ ssl_nginx_conf }}.backup-{{ ansible_date_time.iso8601_basic }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: certbot_domains | length > 0
+
+- name: Create certbot webroot directory
+  file:
+    path: "{{ certbot_webroot }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Check if certificate exists and is valid (>30 days)
+  shell: |
+    set -e
+    cert_dir="{{ ssl_cert_path }}"
+    if [ -f "$cert_dir/fullchain.pem" ]; then
+      expiry=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" | cut -d= -f2)
+      expiry_epoch=$(date -d "$expiry" +%s)
+      now_epoch=$(date +%s)
+      days_left=$(( ($expiry_epoch - $now_epoch) / 86400 ))
+      if [ $days_left -gt 30 ]; then
+        echo "VALID"
+      else
+        echo "EXPIRING"
+      fi
+    else
+      echo "MISSING"
+    fi
+  args:
+    executable: /bin/bash
+  register: cert_status
+  changed_when: false
+
+- name: Remove existing certificate directory if expiring or missing (allow certbot to replace)
+  file:
+    path: "{{ ssl_cert_path }}"
+    state: absent
+  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Request/Install certificate with certbot --nginx (installer, auto edits)
+  block:
+    - name: Run certbot installer for domains
+      command: >
+        "{{ certbot_path.stdout }}" --nginx --noninteractive --agree-tos
+        --register-unsafely-without-email --cert-name {{ ssl_cert_name | default(ssl_domain) }}
+        {% for domain in certbot_domains %} -d {{ domain }}{% endfor %}
+        {% if ssl_enable_http_to_https_redirect | bool %} --redirect{% endif %}
+      args:
+        chdir: /
+      register: certbot_run
+      failed_when: false
+      environment:
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
+
+    - name: Fail-fast on fatal certbot errors (rate limit, unauthorized, account problems)
+      fail:
+        msg: "Certbot failed: {{ certbot_run.stderr | default(certbot_run.stdout) }}"
+      when: >
+        (certbot_run.rc != 0) and
+        (
+          certbot_run.stderr is search("rate limited|too many requests|too many certificates|Too many") or
+          certbot_run.stderr is search("unauthorized|Failed to authenticate|Domain not found") or
+          certbot_run.stderr is search("Error:.*account")
+        )
+
+    - name: Retry certbot run until success (transient errors)
+      command: >
+        "{{ certbot_path.stdout }}" --nginx --noninteractive --agree-tos
+        --register-unsafely-without-email --cert-name {{ ssl_cert_name | default(ssl_domain) }}
+        {% for domain in certbot_domains %} -d {{ domain }}{% endfor %}
+        {% if ssl_enable_http_to_https_redirect | bool %} --redirect{% endif %}
+      args:
+        chdir: /
+      register: certbot_run_retry
+      until: certbot_run_retry.rc == 0
+      retries: 3
+      delay: 5
+      when: certbot_run.rc != 0 and
+            not (certbot_run.stderr is search("rate limited|too many requests|Too many"))
+
+  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Backup current nginx config timestamped if certbot changed it (post-run)
+  copy:
+    src: "{{ ssl_nginx_conf }}"
+    dest: "{{ ssl_nginx_conf }}.post-certbot-{{ ansible_date_time.iso8601_basic }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Test nginx configuration after certbot edits
+  command: nginx -t
+  register: nginx_test
+  failed_when: nginx_test.rc != 0
+  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Restore nginx config if test fails
+  copy:
+    src: "{{ ssl_nginx_conf }}.backup-{{ ansible_date_time.iso8601_basic }}"
+    dest: "{{ ssl_nginx_conf }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: nginx_test is defined and nginx_test.rc != 0
+
+- name: Fail if nginx test fails
+  fail:
+    msg: "nginx config test failed after certbot edits: {{ nginx_test.stderr | default(nginx_test.stdout) }}"
+  when: nginx_test is defined and nginx_test.rc != 0
+
+- name: Reload nginx (only if config valid and certbot made changes)
+  service:
+    name: nginx
+    state: reloaded
+  when: (nginx_test is defined and nginx_test.rc == 0) or (cert_status.stdout == "VALID" and false)
+
+- name: Check if distro-managed renewal exists (systemd timer)
+  command: systemctl is-enabled certbot.timer
+  register: systemd_timer_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Determine certbot binary path for cron
+  command: which certbot
+  register: certbot_which
+  changed_when: false
+
+- name: Create /var/log/letsencrypt directory
+  file:
+    path: /var/log/letsencrypt
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Create cron renewal job if no systemd timer
+  cron:
+    name: "Let's Encrypt certificate renewal"
+    minute: "0"
+    hour: "{{ ssl_renewal_hour }}"
+    job: "{{ certbot_which.stdout | default('/usr/bin/certbot') }} renew --quiet >> /var/log/letsencrypt/renew.log 2>&1"
+    user: root
+  when: systemd_timer_check.rc != 0
+
+- name: Gather certificate expiry date (target-side) if cert exists
+  shell: |
+    set -e
+    CERT="{{ ssl_cert_path }}/cert.pem"
+    if [ -f "$CERT" ]; then
+      openssl x509 -enddate -noout -in "$CERT" | cut -d= -f2
+    else
+      echo ""
+    fi
+  args:
+    executable: /bin/bash
+  register: cert_expiry
+  changed_when: false
+
+- name: Write certificate details to JSON (target-side)
+  copy:
+    content: |
+      {
+        "domain": "{{ ssl_domain }}",
+        "subdomains": {{ ssl_subdomains | default([]) | to_json }},
+        "cert_path": "{{ ssl_cert_path }}",
+        "expiry_date": "{{ cert_expiry.stdout | default('') | trim }}",
+        "timestamp": "{{ ansible_date_time.iso8601 }}",
+        "redirect_enabled": {{ ssl_enable_http_to_https_redirect | bool }}
+      }
+    dest: "/var/log/letsencrypt/last_cert.json"
+    owner: root
+    group: root
+    mode: '0600'

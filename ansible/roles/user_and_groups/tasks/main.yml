@@ -1,0 +1,71 @@
+---
+- name: Build aggregated_info
+  set_fact:
+    user_and_groups_vars:
+      user_name: "{{ user_name }}"
+      admin_name: "{{ admin_name }}"
+      admin_password_hash: "{{ admin_password_hash }}"
+
+- name: Print aggregated_info (structured)
+  ansible.builtin.debug:
+    var: user_and_groups_vars
+
+- name: Ensure admin group exists
+  ansible.builtin.group:
+    name: admin
+    state: present
+
+- name: Add admin group to sudoers
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/admin_group
+    content: "%admin ALL=(ALL:ALL) ALL\n"
+    mode: '0440'
+    validate: 'visudo -cf %s'
+
+- name: Ensure regular user exists (SSH keys only, no password)
+  ansible.builtin.user:
+    name: "{{ user_name }}"
+    shell: /bin/bash
+    create_home: yes
+    password_lock: yes
+    state: present
+
+- name: Ensure admin group (same name as admin user) exists
+  ansible.builtin.group:
+    name: "{{ admin_name }}"
+    state: present
+
+- name: Ensure admin user exists with password
+  ansible.builtin.user:
+    name: "{{ admin_name }}"
+    shell: /bin/bash
+    create_home: yes
+    group: "{{ admin_name }}"
+    groups: sudo,admin
+    append: yes
+    password: "{{ admin_password_hash }}"
+    state: present
+
+# - name: Ensure admin user exists without password (lock) if password not provided
+#   ansible.builtin.user:
+#     name: "{{ admin_name }}"
+#     shell: /bin/bash
+#     create_home: yes
+#     group: "{{ admin_name }}"
+#     groups: sudo,admin
+#     append: yes
+#     password_lock: yes
+#     state: present
+#   when: admin_password_hash == '' or admin_password_hash is not defined
+
+# - name: Get user home directory via getent
+#   ansible.builtin.getent:
+#     database: passwd
+#     key: "{{ user_name }}"
+#   register: user_getent
+#
+# - name: Get admin home directory via getent
+#   ansible.builtin.getent:
+#     database: passwd
+#     key: "{{ admin_name }}"
+#   register: admin_getent

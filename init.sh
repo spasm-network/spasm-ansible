@@ -1,0 +1,598 @@
+#!/bin/bash
+# pipefail stops execution if encounters any errors
+set -euo pipefail
+
+# Disable Ubuntu 22.04 "Daemon using outdated libraries" prompt
+# By setting restart option in /etc/needrestart/needrestart.conf to:
+# to 'a' if we want to restart the services automatically
+# $nrconf{restart} = 'a';
+# to 'l' is we want to simply list the services that need restart.
+# $nrconf{restart} = 'l';
+# sed -i "/#\$nrconf{restart} = 'i';/s/.*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf
+# Another approach to stop prompts (currently disabled): 
+# export NEEDRESTART_MODE=a
+# export DEBIAN_FRONTEND=noninteractive
+
+BOLD='\033[1m'
+ACCENT='\033[38;2;255;77;77m'       # coral-bright  #ff4d4d
+# shellcheck disable=SC2034
+ACCENT_BRIGHT='\033[38;2;255;110;110m' # lighter coral
+INFO='\033[38;2;136;146;176m'       # text-secondary #8892b0
+SUCCESS='\033[38;2;0;229;204m'      # cyan-bright   #00e5cc
+WARN='\033[38;2;255;176;32m'        # amber (no site equiv, keep warm)
+ERROR='\033[38;2;230;57;70m'        # coral-mid     #e63946
+MUTED='\033[38;2;90;100;128m'       # text-muted    #5a6480
+NC='\033[0m' # No Color
+
+# Import environment variables:
+# USER_NAME
+# ADMIN_NAME
+# DOMAIN_NAME
+# Find the absolute path to this script
+# THIS_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+# Resolve the directory containing this script (works with symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+THIS_SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+ENV_FILE="${THIS_SCRIPT_DIR}/.env"
+# Source .env file only if it exists
+test -f "${ENV_FILE}" && source "${ENV_FILE}"
+
+# Source the os-release file
+source /etc/os-release
+DISTRO_NAME="${NAME:-unknown}"
+DISTRO_VERSION_ID="${VERSION_ID:-unknown}"
+DISTRO_VERSION_CODENAME="${VERSION_CODENAME:-unknown}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+
+# Assign a default value if it is unset or empty
+# USER="${USER_NAME:-user}"
+# ADMIN="${ADMIN_NAME:-admin}"
+DOMAIN_NAME="${DOMAIN_NAME:-}"
+ADMINS="${ADMINS:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+
+# Assign a default value if it is unset or empty
+USER_NAME="${USER_NAME:-}"
+ADMIN_NAME="${ADMIN_NAME:-}"
+NEW_SSH_PORT="${NEW_SSH_PORT:-}"
+# Unset empty vars, so ansible uses defaults
+# if [ -z "$USER_NAME" ]; then unset USER_NAME; fi
+# if [ -z "$ADMIN_NAME" ]; then unset ADMIN_NAME; fi
+# if [ -z "$NEW_SSH_PORT" ]; then unset NEW_SSH_PORT; fi
+
+PLAYBOOK_PATH="${THIS_SCRIPT_DIR}/ansible/playbook.yml"
+TEST_PATH="${THIS_SCRIPT_DIR}/ansible/test.yml"
+# ENV_FILE="/.env"
+MAX_RETRIES=5
+RETRY_SLEEP=5
+
+echo_env_variables() {
+  echo "----------------------------------------------------"
+  echo "Environment variables from .env file:"
+  # echo "USER: ${USER}"
+  # echo "ADMIN: ${ADMIN}"
+  echo "DOMAIN_NAME: ${DOMAIN_NAME}"
+  echo "ADMINS: ${ADMINS}"
+  echo "ADMIN_PASSWORD: ${ADMIN_PASSWORD}"
+}
+
+get_domain_name() {
+  echo "----------------------------------------------------"
+  ####################################
+  # Check if a domain name has been provided in the .env file.
+  #
+  # Option 1. Domain name is provided in the .env file.
+  # '-n' checks if a variable is not empty
+  if [ -n "${DOMAIN_NAME}" ]; then
+      echo "The domain name is specified in the .env file."
+      echo -e "DOMAIN_NAME: ${ACCENT}${BOLD}${DOMAIN_NAME}${NC}"
+
+      # Softly prompt a user to confirm the domain name with a timeout,
+      # because in the vast majority of cases the domain name specified
+      # in the .env file is the intended domain name.
+      echo "Do you want to change this domain name? (y/n) "
+
+      # Initialize countdown timer
+      COUNTDOWN_ORIGINAL=60
+      COUNTDOWN="${COUNTDOWN_ORIGINAL}"
+
+      # Countdown timer
+      while [[ $COUNTDOWN -gt 0 ]]; do
+        echo -ne "\r$COUNTDOWN seconds remaining "
+        # Sleep is disabled, because there is already a 1 sec delay
+        # with 'read -t 1' below, which waits for user's input.
+        # sleep 1
+        ((COUNTDOWN--))
+
+        # Check if user has input any character to stop the countdown.
+        # '|| true' is added so the command is not aborted due to 'set -e'.
+        read -t 1 -n 1 IF_CHANGE_DOMAIN_ANSWER || true
+        if [[ ! -z "${IF_CHANGE_DOMAIN_ANSWER}" ]]; then
+          echo -e "\nDetected input: ${IF_CHANGE_DOMAIN_ANSWER}"
+          break
+        fi
+      done
+
+      echo -e "\n"
+
+      # If a user does not respond within a few seconds, set answer to "n"
+      if [[ -z "$IF_CHANGE_DOMAIN_ANSWER" ]]; then
+        IF_CHANGE_DOMAIN_ANSWER="n"
+        echo "A user didn't respond within ${COUNTDOWN_ORIGINAL} seconds."
+      fi
+
+      while true; do
+        if [[ "${IF_CHANGE_DOMAIN_ANSWER}" =~ ^(yes|y|Yes|YES)$ || \
+            "${IF_CHANGE_DOMAIN_ANSWER}" =~ ^(no|n|No|NO)$ ]]; then
+          break
+        else
+          echo "Invalid input '${IF_CHANGE_DOMAIN_ANSWER}'."
+          echo "Type 'y' or 'n' and press enter."
+          read IF_CHANGE_DOMAIN_ANSWER
+        fi
+      done
+
+      echo "Answer: ${IF_CHANGE_DOMAIN_ANSWER}"
+
+      if [[ "${IF_CHANGE_DOMAIN_ANSWER}" =~ ^(yes|y|Yes|YES)$ ]]; then
+          echo "Changing the domain name..."
+          # read -p 'Please enter your domain name (e.g., degenrocket.space): ' DIRTY_SITE_TLD
+          # echo 'Please enter your domain name (e.g., degenrocket.space): '
+          echo 'Enter the domain name where the forum will be installed.'
+          echo 'If you install on a subdomain like "forum", then specify it.'
+          echo -e "Example ${ACCENT}${BOLD}degenrocket.space${NC} or ${ACCENT}${BOLD}forum.spasm.network${NC}"
+          read -p 'Your domain name: ' DIRTY_SITE_TLD
+          else
+          echo "Continuing with the domain name: ${DOMAIN_NAME}"
+          DIRTY_SITE_TLD="${DOMAIN_NAME}"
+      fi
+
+  # Option 2. Domain name is not provided in the .env file.
+  else
+      # echo "The domain name (DOMAIN_NAME) is not specified in the .env file."
+      echo 'Enter the domain name where the forum will be installed.'
+      echo 'If you install on a subdomain like "forum", then specify it.'
+      echo -e "Example ${ACCENT}${BOLD}degenrocket.space${NC} or ${ACCENT}${BOLD}forum.spasm.network${NC}"
+      read -p 'Your domain name: ' DIRTY_SITE_TLD
+  fi
+
+  # Loop until a user provides a valid domain name with at least one period
+  while [[ "${DIRTY_SITE_TLD}" != *.* ]]; do
+    echo "ERROR: Not a valid domain name: ${DIRTY_SITE_TLD}"
+    # Ask a user to input a domain name again
+    # read -p 'Please enter your domain name (e.g., degenrocket.space): ' DIRTY_SITE_TLD
+    echo -e "Please enter a valid domain name (e.g., ${ACCENT}${BOLD}degenrocket.space${NC} or ${ACCENT}${BOLD}forum.spasm.network${NC})"
+    read -p 'Your domain name: ' DIRTY_SITE_TLD
+  done
+
+  # Remove 'http://'
+  DIRTY_SITE_TLD="${DIRTY_SITE_TLD#http://}"
+
+  # Remove 'https://'
+  DIRTY_SITE_TLD="${DIRTY_SITE_TLD#https://}"
+
+  # Remove 'www.'
+  DIRTY_SITE_TLD="${DIRTY_SITE_TLD#www.}"
+
+  # Remove 'staging.' from 'staging.example.com', but not from 'staging.com'.
+  # Check if the string contains more than one period
+  # if [[ "$DIRTY_SITE_TLD" =~ .*\..*\..* ]]; then
+    # Remove 'staging.' only if the string starts with it
+    # if [[ "$DIRTY_SITE_TLD" == staging.* ]]; then
+      # DIRTY_SITE_TLD="${DIRTY_SITE_TLD#staging.}"
+    # fi
+  # fi
+
+  # Cleaning is done
+  CLEAN_SITE_TLD="${DIRTY_SITE_TLD}"
+
+  SITE_TLD="${CLEAN_SITE_TLD}"
+
+  echo -e "Final domain name: ${ACCENT}${BOLD}${SITE_TLD}${NC}"
+
+  # Check if the domain name can be resolved
+  echo "Wait a sec, trying to resolve the domain name..."
+
+  # Sleep is added for UX so a user can terminate the command
+  # if a wrong domain name has been specified before pinging it
+  # due to privacy reasons.
+  sleep 5
+
+  # Temporary disable exitting on error to check the domain name.
+  set +e
+
+  # Ping the domain
+  host "${SITE_TLD}"
+
+  # The $? variable contains the exit status of the last command
+  # If the host command is successful, its exit status is 0,
+  # otherwise it's non-zero
+  if [ $? -eq 0 ]; then
+    echo -e "The domain ${ACCENT}${BOLD}${SITE_TLD}${NC} can be resolved."
+    echo "Proceeding..."
+  else
+    echo -e "ERROR: The domain ${ACCENT}${BOLD}${SITE_TLD}${NC} cannot be resolved."
+    echo "Make sure that you've configured DNS records,"
+    echo "and that you have a stable internet connection."
+    echo "Please refer to the README.md file for the instruction."
+    echo "It's suggested to:"
+    echo "- Exit this script."
+    echo "- Investigate and fix the issue."
+    echo "- Run this script again."
+    echo "You can try to ping your website from another terminal:"
+    echo -e "host '${ACCENT}${BOLD}${SITE_TLD}${NC}'"
+    echo "If the command above returns a valid IP address,"
+    echo "then you can continue this script."
+
+    CANNOT_RESOLVE_PROMPT_TEXT="
+  Proceed further even though the domain name cannot be resolved?
+  yes/no: "
+
+    read -p "${CANNOT_RESOLVE_PROMPT_TEXT}" IF_PROCEED_ERROR
+    # echo "Proceed: \"${IF_PROCEED_ERROR}\""
+
+    if [[ "${IF_PROCEED_ERROR}" =~ ^(yes|y|Yes|YES)$ ]]; then
+        echo "Continuing the script..."
+    else
+        echo "Exitting the script."
+        exit 0
+    fi
+  fi
+}
+
+get_admins() {
+  echo "----------------------------------------------------"
+  ####################################
+  # Check if a domain name has been provided in the .env file.
+  #
+  #
+  # Option 1. Domain name is provided in the .env file.
+  # '-n' checks if a variable is not empty
+  if [ -n "${ADMINS}" ]; then
+      echo "Admins are set in .env file."
+      echo -e "ADMINS: ${ACCENT}${BOLD}${ADMINS}${NC}"
+
+      echo "Do you want to change admins? (y/n) "
+
+      # Initialize countdown timer
+      COUNTDOWN_ORIGINAL=60
+      COUNTDOWN="${COUNTDOWN_ORIGINAL}"
+
+      # Countdown timer
+      while [[ $COUNTDOWN -gt 0 ]]; do
+        echo -ne "\r$COUNTDOWN seconds remaining "
+        # Sleep is disabled, because there is already a 1 sec delay
+        # with 'read -t 1' below, which waits for user's input.
+        # sleep 1
+        ((COUNTDOWN--))
+
+        # Check if user has input any character to stop the countdown.
+        # '|| true' is added so the command is not aborted due to 'set -e'.
+        read -t 1 -n 1 IF_CHANGE_ANSWER || true
+        if [[ ! -z "${IF_CHANGE_ANSWER}" ]]; then
+          echo -e "\nDetected input: ${IF_CHANGE_ANSWER}"
+          break
+        fi
+      done
+
+      echo -e "\n"
+
+      # If a user does not respond within a few seconds, set answer to "n"
+      if [[ -z "$IF_CHANGE_ANSWER" ]]; then
+        IF_CHANGE_ANSWER="n"
+        echo "A user didn't respond within ${COUNTDOWN_ORIGINAL} seconds."
+      fi
+
+      while true; do
+        if [[ "${IF_CHANGE_ANSWER}" =~ ^(yes|y|Yes|YES)$ || \
+            "${IF_CHANGE_ANSWER}" =~ ^(no|n|No|NO)$ ]]; then
+          break
+        else
+          echo "Invalid input '${IF_CHANGE_ANSWER}'."
+          echo "Type 'y' or 'n' and press enter."
+          read IF_CHANGE_ANSWER
+        fi
+      done
+
+      echo "Answer: ${IF_CHANGE_ANSWER}"
+
+      if [[ "${IF_CHANGE_ANSWER}" =~ ^(yes|y|Yes|YES)$ ]]; then
+          echo "Changing admins..."
+          echo "Enter your admin pubkeys (Ethereum address, Nostr npub/hex, etc.)"
+          echo "There keys will be used to access web admin panel."
+          echo -e "Example: ${ACCENT}${BOLD}0xf8553015220a857eda377a1e903c9e5afb3ac2fa${NC},${ACCENT}${BOLD}npub1kwnsd0xwkw03j0d92088vf2a66a9kztsq8ywlp0lrwfwn9yffjqspcmr0z${NC}"
+          read -p 'Your admin pubkeys: ' ADMINS
+          else
+          echo "Continuing with admins: ${ADMINS}"
+      fi
+
+  # Option 2. Admins are not provided in the .env file.
+  else
+          echo "Enter your admin pubkeys (Ethereum address, Nostr npub/hex, etc.)"
+          echo "There keys will be used to access web admin panel."
+          echo -e "Example: ${ACCENT}${BOLD}0xf8553015220a857eda377a1e903c9e5afb3ac2fa${NC},${ACCENT}${BOLD}npub1kwnsd0xwkw03j0d92088vf2a66a9kztsq8ywlp0lrwfwn9yffjqspcmr0z${NC}"
+          read -p 'Your admin pubkeys: ' ADMINS
+  fi
+
+  # TODO check pubkeys
+  # Loop until a user provides a valid domain name with at least one period
+  # while [[ "${DIRTY_SITE_TLD}" != *.* ]]; do
+  #   echo "ERROR: Not a valid domain name: ${DIRTY_SITE_TLD}"
+  #   # Ask a user to input a domain name again
+  #   # read -p 'Please enter your domain name (e.g., degenrocket.space): ' DIRTY_SITE_TLD
+  #   echo -e "Please enter a valid domain name (e.g., ${ACCENT}${BOLD}degenrocket.space${NC} or ${ACCENT}${BOLD}forum.spasm.network${NC})"
+  #   read -p 'Your domain name: ' DIRTY_SITE_TLD
+  # done
+
+  echo -e "Final admins: ${ACCENT}${BOLD}${ADMINS}${NC}"
+}
+
+get_admin_password() {
+  echo "----------------------------------------------------"
+  echo "Admin password is for server-level tasks that require sudo."
+  echo "It's not used to access a web admin panel because all"
+  echo "admin events are directly signed with your private keys."
+  local pass1 pass2 CHANGE_ANS COUNTDOWN_ORIGINAL COUNTDOWN KEY
+
+  if [ -n "${ADMIN_PASSWORD:-}" ]; then
+    echo "ADMIN_PASSWORD is set in .env."
+    echo "Change password? (y/n) "
+
+    COUNTDOWN_ORIGINAL=60
+    COUNTDOWN="${COUNTDOWN_ORIGINAL}"
+    CHANGE_ANS=""
+
+    while [[ $COUNTDOWN -gt 0 ]]; do
+      echo -ne "\r$COUNTDOWN seconds remaining to press y or n"
+      ((COUNTDOWN--))
+      # read a single char without blocking; don't prompt again later
+      read -t 1 -n 1 KEY || true
+      if [[ -n "$KEY" ]]; then
+        echo -e "\nDetected input: $KEY"
+        CHANGE_ANS="$KEY"
+        break
+      fi
+    done
+    echo
+
+    if [[ -z "$CHANGE_ANS" ]]; then
+      CHANGE_ANS="n"
+      echo "No response within ${COUNTDOWN_ORIGINAL} seconds. Keeping existing password."
+    else
+      # If detected key isn't y/n, ask once for a clear y/n
+      if [[ ! "$CHANGE_ANS" =~ ^[yYnN]$ ]]; then
+        read -p "Please type 'y' or 'n' and press Enter: " CHANGE_ANS
+      fi
+    fi
+
+    while true; do
+      if [[ "${CHANGE_ANS}" =~ ^(y|Y|yes|Yes|YES)$ ]]; then
+        echo "Changing ADMIN_PASSWORD..."
+        break
+      elif [[ "${CHANGE_ANS}" =~ ^(n|N|no|No|NO)$ ]]; then
+        echo "Keeping existing ADMIN_PASSWORD."
+        return 0
+      else
+        echo "Invalid input '${CHANGE_ANS}'. Type 'y' or 'n' and press enter."
+        read CHANGE_ANS
+      fi
+    done
+  fi
+
+  while true; do
+    read -r -s -p "Enter ADMIN password: " pass1 || { echo; return 1; }
+    echo
+    read -r -s -p "Confirm ADMIN password: " pass2 || { echo; return 1; }
+    echo
+
+    if [ -z "$pass1" ]; then
+      echo "Password cannot be empty. Please try again."
+      continue
+    fi
+
+    if [ "$pass1" = "$pass2" ]; then
+      ADMIN_PASSWORD="$pass1"
+      pass2=''
+      return 0
+    else
+      echo "Passwords do not match. Please try again."
+      pass1='' pass2=''
+    fi
+  done
+}
+
+generate_postgres_password_if_empty() {
+  if [ -z "$POSTGRES_PASSWORD" ]; then
+    POSTGRES_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c64)
+    if [ -z "$POSTGRES_PASSWORD" ]; then
+      POSTGRES_PASSWORD=$(date +%s%N | sha256sum | cut -c1-64)
+    fi
+    export POSTGRES_PASSWORD
+  fi
+}
+
+save_variables_to_env_file() {
+  echo "Let's save env vars"
+  umask 077
+  cat > ${ENV_FILE} <<EOF
+ADMINS="${ADMINS}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+DOMAIN_NAME="${SITE_TLD}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+EOF
+}
+
+print_distro() {
+  # Print distribution information
+  echo "Distribution: $DISTRO_NAME"
+  echo "Version: $DISTRO_VERSION_ID"
+  echo "Codename: $DISTRO_VERSION_CODENAME"
+}
+
+# Retry helper
+_retry() {
+  local max_attempts=${1:-$MAX_RETRIES}
+  local sleep_sec=${2:-$RETRY_SLEEP}
+  shift 2 || true
+  local cmd=("$@")
+  local attempt=1
+  until "${cmd[@]}"; do
+    if (( attempt >= max_attempts )); then
+      echo "⨯ Command failed after ${attempt} attempts: ${cmd[*]}" >&2
+      return 1
+    fi
+    echo "Retry ${attempt}/${max_attempts} for: ${cmd[*]}" >&2
+    sleep "$sleep_sec"
+    attempt=$((attempt + 1))
+  done
+  return 0
+}
+
+# Per-distro installers
+install_ansible_debian() {
+  echo "→ Installing Ansible on Debian/Ubuntu"
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" apt-get update || { echo "Failed: apt-get update" >&2; return 1; }
+
+  # Install only packages from the distro package manager (no external repos/PPAs)
+  # _retry "$MAX_RETRIES" "$RETRY_SLEEP" apt-get install -y --no-install-recommends software-properties-common ca-certificates gnupg lsb-release curl || { echo "Failed: install prereqs" >&2; return 1; }
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" apt-get install -y --no-install-recommends ca-certificates gnupg lsb-release curl || { echo "Failed: install prereqs" >&2; return 1; }
+
+  # Do NOT add third-party PPAs or external repos — use the distro-provided ansible package only
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" apt-get update || { echo "Failed: apt-get update before installing ansible" >&2; return 1; }
+
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" apt-get install -y --no-install-recommends ansible || { echo "Failed: apt-get install ansible" >&2; return 1; }
+  return 0
+}
+
+install_ansible_fedora() {
+  echo "→ Installing Ansible on Fedora/RHEL-like"
+  if ! command -v dnf >/dev/null 2>&1; then
+    echo "Failed: dnf not found (unsupported OS)" >&2
+    return 1
+  fi
+
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" dnf makecache || { echo "Failed: dnf makecache" >&2; return 1; }
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" dnf install -y --setopt=install_weak_deps=False ansible || { echo "Failed: dnf install ansible" >&2; return 1; }
+  return 0
+}
+
+install_ansible_suse() {
+  echo "→ Installing Ansible on SUSE"
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" zypper --non-interactive refresh || { echo "Failed: zypper refresh" >&2; return 1; }
+  _retry "$MAX_RETRIES" "$RETRY_SLEEP" zypper --non-interactive install -y ansible || { echo "Failed: zypper install ansible" >&2; return 1; }
+  return 0
+}
+
+install_ansible() {
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    echo "✓ ansible-playbook already installed: $(ansible-playbook --version | head -n1)"
+    return 0
+  fi
+
+  # Detect distro
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+  else
+    echo "⨯ /etc/os-release not found; cannot detect distro" >&2
+    return 2
+  fi
+
+  local id_lc="${ID,,}"
+  local id_like_lc="${ID_LIKE:-}" ; id_like_lc="${id_like_lc,,}"
+
+  if [[ "$id_lc" == "ubuntu" || "$id_lc" == "debian" ]]; then
+    install_ansible_debian || { echo "⨯ Failed to install Ansible on Debian/Ubuntu" >&2; return 3; }
+  elif [[ "$id_lc" == "fedora" || "$id_like_lc" == *"rhel"* || "$id_like_lc" == *"fedora"* ]]; then
+    install_ansible_fedora || { echo "⨯ Failed to install Ansible on RHEL/Fedora" >&2; return 3; }
+  elif [[ "$id_lc" == "sles" || "$id_lc" == "opensuse" || "$id_like_lc" == *"suse"* ]]; then
+    install_ansible_suse || { echo "⨯ Failed to install Ansible on SUSE" >&2; return 3; }
+  else
+    # Fallback chain
+    if command -v apt-get >/dev/null 2>&1; then
+      install_ansible_debian || { echo "⨯ Failed to install Ansible via apt fallback" >&2; return 3; }
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+      install_ansible_fedora || { echo "⨯ Failed to install Ansible via dnf/yum fallback" >&2; return 3; }
+    elif command -v zypper >/dev/null 2>&1; then
+      install_ansible_suse || { echo "⨯ Failed to install Ansible via zypper fallback" >&2; return 3; }
+    else
+      echo "⨯ Unsupported distro: ${ID:-unknown}" >&2
+      return 4
+    fi
+  fi
+
+  if ! command -v ansible-playbook >/dev/null 2>&1; then
+    echo "⨯ ansible-playbook not found after installation attempts" >&2
+    return 5
+  fi
+
+  echo "✓ Ansible installed: $(ansible-playbook --version | head -n1)"
+  return 0
+}
+
+run_playbook() {
+  ansible-playbook ${PLAYBOOK_PATH}
+}
+
+run_test_playbook() {
+  # `env -i` starts with an empty environment, so only the vars
+  # explicitly passed are present.
+  env_cmd=(env -i)
+
+  # Preserve essential vars for ansible to work
+  env_cmd+=(HOME="${HOME}")
+  env_cmd+=(PATH="${PATH}")
+  env_cmd+=(USER="${USER}")
+
+  if [ -n "${USER_NAME:-}" ]; then
+    env_cmd+=(USER_NAME="${USER_NAME}")
+  fi
+  if [ -n "${ADMIN_NAME:-}" ]; then
+    env_cmd+=(ADMIN_NAME="${ADMIN_NAME}")
+  fi
+  if [ -n "${NEW_SSH_PORT:-}" ]; then
+    env_cmd+=(NEW_SSH_PORT="${NEW_SSH_PORT}")
+  fi
+
+  if [ -n "${ADMIN_PASSWORD_HASH:-}" ]; then
+    env_cmd+=(ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH}")
+  fi
+
+  if [ -n "${POSTGRES_PASSWORD:-}" ]; then
+    env_cmd+=(POSTGRES_PASSWORD="${POSTGRES_PASSWORD}")
+  fi
+
+  if [ -n "${ADMINS:-}" ]; then
+    env_cmd+=(ADMINS="${ADMINS}")
+  fi
+
+  # "${env_cmd[@]}" ansible-playbook -v "${TEST_PATH}"
+  # "${env_cmd[@]}" ansible-playbook -vv "${TEST_PATH}"
+  # "${env_cmd[@]}" ansible-playbook -vvv "${TEST_PATH}"
+  "${env_cmd[@]}" ansible-playbook "${TEST_PATH}"
+
+}
+
+main() {
+  echo "==============================="
+  echo "Welcome to initial server setup"
+  echo_env_variables
+  get_domain_name
+  get_admins
+  get_admin_password || { echo "Password input aborted"; exit 1; }
+  generate_postgres_password_if_empty
+  save_variables_to_env_file
+  print_distro
+  install_ansible || { echo "Ansible installation failed; aborting."; exit 1; }
+  # run_playbook || { echo "Playbook run failed; aborting."; exit 1; }
+  run_test_playbook || { echo "Playbook run failed; aborting."; exit 1; }
+}
+
+main "$@"
+
+

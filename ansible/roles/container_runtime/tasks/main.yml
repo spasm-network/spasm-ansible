@@ -1,0 +1,61 @@
+---
+# Fail early on unsupported runtime request
+- name: Fail if unsupported runtime requested
+  fail:
+    msg: "Unsupported runtime '{{ runtime }}'. Supported: podman, docker"
+  when: runtime not in ['podman', 'docker']
+
+# Include distro-specific tasks (uses first_found to pick appropriate file)
+- name: Include distro-specific tasks
+  include_tasks: "{{ lookup('first_found', params) }}"
+  vars:
+    params:
+      files:
+        - "{{ ansible_os_family | lower }}.yml"
+      paths:
+        - tasks
+      skip: true
+
+# If using podman, verify docker-compose is available and runnable
+- name: Check docker-compose usable
+  command: docker-compose --version
+  register: docker_compose_check
+  failed_when: false
+  changed_when: false
+  when: runtime == 'podman'
+
+- name: Fail if podman requested but docker-compose not found or unusable
+  fail:
+    msg: >
+      Podman requested but docker-compose was not found or is not runnable.
+      Install docker-compose via your distro package manager.
+  when:
+    - runtime == 'podman'
+    - docker_compose_check.rc != 0
+
+# Smoke test: verify runtime binary works
+- name: Verify container runtime executable exists and is functional
+  become: true
+  command: "{{ runtime }} --version"
+  register: runtime_version_check
+  changed_when: false
+  failed_when: runtime_version_check.rc != 0
+
+# Write success install log
+- name: Write install log (success)
+  become: true
+  copy:
+    dest: "{{ install_log_path }}"
+    content: |
+      {
+        "timestamp": "{{ ansible_date_time.iso8601 }}",
+        "runtime": "{{ runtime }}",
+        "requested_version": "{{ runtime_version | default('distro-default') }}",
+        "detected": "{{ runtime_version_check.stdout | default('unknown') }}",
+        "compose_provider": "docker-compose",
+        "status": "installed"
+      }
+    owner: root
+    group: root
+    mode: '0644'
+  when: runtime_version_check is defined and runtime_version_check.rc == 0

@@ -1,0 +1,30 @@
+# roles/nginx_proxy/handlers/main.yml
+---
+- name: Test nginx configuration
+  command: "{{ nginx_test_command | default('nginx -t') }}"
+  register: nginx_test
+  failed_when: nginx_test.rc != 0
+  listen: "Test and reload nginx"
+
+- name: Save failing nginx config for debugging
+  copy:
+    content: "{{ lookup('file', '/etc/nginx/sites-available/' + (nginx_site_name | default('app-proxy'))) }}"
+    dest: "/var/log/nginx/failed-{{ nginx_site_name | default('app-proxy') }}-{{ ansible_date_time.iso8601_basic }}.conf"
+    owner: root
+    group: root
+    mode: '0600'
+  when: nginx_test.rc != 0
+  listen: "Test and reload nginx"
+
+- name: Reload nginx
+  service:
+    name: "{{ nginx_service_name | default('nginx') }}"
+    state: reloaded
+  when: nginx_test.rc == 0
+  listen: "Test and reload nginx"
+
+- name: Fail the play with nginx test output
+  fail:
+    msg: "nginx config test failed: {{ nginx_test.stderr | default(nginx_test.stdout) }}"
+  when: nginx_test.rc != 0
+  listen: "Test and reload nginx"

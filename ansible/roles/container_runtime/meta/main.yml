@@ -1,0 +1,6 @@
+---
+dependencies: []
+galaxy_info:
+  author: your-org
+  description: Install and validate container runtime (podman/docker) using distro packages
+  license: MIT

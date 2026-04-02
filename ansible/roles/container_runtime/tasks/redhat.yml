@@ -1,0 +1,100 @@
+---
+# RedHat/CentOS/Fedora specific tasks
+
+- name: Ensure required packages present (RedHat)
+  become: true
+  package:
+    name:
+      - dnf-plugins-core
+      - curl
+      - ca-certificates
+    state: present
+
+- name: Install container runtime package (RedHat)
+  become: true
+  dnf:
+    name: >-
+      {% if runtime == 'podman' %}
+        podman{% if runtime_version %}-{{ runtime_version }}{% endif %}
+      {% else %}
+        docker{% if runtime_version %}-{{ runtime_version }}{% endif %}
+      {% endif %}
+    state: present
+    update_cache: yes
+
+- name: Ensure docker-compose package present (RedHat)
+  become: true
+  package:
+    name: docker-compose
+    state: present
+  when: runtime == 'podman'
+
+- name: Gather systemd units list (RedHat)
+  become: true
+  command: systemctl list-unit-files --type=service --type=socket --no-legend
+  register: systemd_units_raw
+  changed_when: false
+
+- name: Extract unit names
+  set_fact:
+    systemd_units: "{{ systemd_units_raw.stdout_lines | map('split') | map('first') | list }}"
+
+- name: Build runtime unit candidate list (RedHat)
+  set_fact:
+    runtime_unit_candidates: >-
+      {{
+        ([ runtime + '.service', runtime + '.socket' ] if runtime != 'podman'
+         else ['podman.service','podman.socket'])
+        | unique
+      }}
+
+- name: Set runtime_service fact if any candidate exists
+  set_fact:
+    runtime_service: "{{ item }}"
+  loop: "{{ runtime_unit_candidates }}"
+  when: "item in systemd_units"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Fail if no systemd unit detected for runtime (RedHat)
+  fail:
+    msg: |
+      No systemd unit found for {{ runtime }} after installation.
+      Available units: {{ systemd_units | join(', ') }}
+      This likely indicates the package did not install unit files correctly.
+  when:
+    - enable_socket | bool
+    - runtime_service is not defined
+
+- name: Ensure runtime socket/service enabled and started (RedHat)
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ runtime_service }}"
+    enabled: yes
+    state: started
+  when: runtime_service is defined and runtime_service != ''
+
+- name: Enable lingering for app user (podman rootless mode)
+  become: true
+  command: loginctl enable-linger {{ owner }}
+  register: linger_result
+  failed_when: false
+  changed_when: "'already enabled' not in (linger_result.stderr | default(''))"
+  when: runtime == 'podman' and owner != 'root'
+
+- name: Ensure /etc/containers/registries.conf exists (Podman)
+  become: true
+  stat:
+    path: /etc/containers/registries.conf
+  register: registries_conf
+  when: runtime == 'podman'
+
+- name: Deploy minimal registries.conf (Podman)
+  become: true
+  copy:
+    dest: /etc/containers/registries.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ lookup('template','registries.conf.j2') }}"
+  when: runtime == 'podman' and not registries_conf.stat.exists

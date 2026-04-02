@@ -1,0 +1,36 @@
+---
+galaxy_info:
+  author: "Your Name"
+  description: "Idempotent system updates and auto-update configuration"
+  company: "Your Company"
+  license: "MIT"
+  min_ansible_version: "2.13"
+  platforms:
+    - name: Debian
+      versions:
+        - "11"
+        - "12"
+        - "13"
+    - name: Ubuntu
+      versions:
+        - "22.04"
+        - "24.04"
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Fedora
+      versions:
+        - "42"
+        - "43"
+    - name: openSUSE
+      versions:
+        - "15.5"
+        - "15.6"
+  galaxy_tags:
+    - system
+    - updates
+    - automation
+    - hardening
+
+dependencies: []

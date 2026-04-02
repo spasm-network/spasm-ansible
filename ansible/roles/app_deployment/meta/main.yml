@@ -1,0 +1,9 @@
+---
+galaxy_info:
+  role_name: app_deployment
+  author: your-name
+  description: Clone app repo, write .env, detect runtime, deploy via compose, smoke test
+  license: MIT
+  min_ansible_version: 2.10
+dependencies: []
+

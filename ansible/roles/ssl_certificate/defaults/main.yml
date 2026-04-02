@@ -1,0 +1,8 @@
+---
+# Defaults (can be overridden)
+ssl_domain: "{{ DOMAIN_NAME | default(domain) }}"
+ssl_enable_http_to_https_redirect: true
+ssl_renewal_hour: 3
+ssl_subdomains: []
+certbot_webroot: /var/www/html
+ssl_cert_name: ""

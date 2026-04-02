@@ -1,0 +1,28 @@
+---
+- name: Build aggregated_info
+  set_fact:
+    aggregated_info:
+      HOME: "{{ lookup('env','HOME') or '' }}"
+      PATH: "{{ lookup('env','PATH') or '' }}"
+      USER: "{{ lookup('env','USER') or '' }}"
+      user_name: "{{ user_name }}"
+      admin_name: "{{ admin_name }}"
+      admin_password_hash: "{{ admin_password_hash }}"
+      new_ssh_port: "{{ new_ssh_port }}"
+
+- name: Print aggregated_info (structured)
+  ansible.builtin.debug:
+    var: aggregated_info
+
+# - name: Print aggregated_info (single line)
+#   ansible.builtin.debug:
+#     msg: >
+#       HOME={{ aggregated_info.HOME }}
+#       PATH={{ aggregated_info.PATH }}
+#       USER={{ aggregated_info.USER }}
+#       USER_NAME_env={{ aggregated_info.USER_NAME_env }}
+#       ADMIN_NAME_env={{ aggregated_info.ADMIN_NAME_env }}
+#       NEW_SSH_PORT_env={{ aggregated_info.NEW_SSH_PORT_env }}
+#       user_name={{ aggregated_info.user_name }}
+#       admin_name={{ aggregated_info.admin_name }}
+#       new_ssh_port={{ aggregated_info.new_ssh_port }}

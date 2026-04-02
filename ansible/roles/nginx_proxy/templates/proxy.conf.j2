@@ -1,0 +1,67 @@
+# Host nginx reverse proxy (idempotent). Terminates TLS later.
+# Proxies all traffic to local Docker/Podman mapped port (default 33333).
+# Upstream block for future extensibility / load balancing.
+upstream {{ nginx_upstream_name | default('app_backend') }} {
+    server 127.0.0.1:{{ nginx_backend_port | default(33333) }};
+    keepalive {{ nginx_upstream_keepalive | default(16) }};
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{ nginx_server_name | default('_') }};
+
+    access_log {{ nginx_access_log | default('/var/log/nginx/app-proxy.access.log') }};
+    error_log  {{ nginx_error_log  | default('/var/log/nginx/app-proxy.error.log') }} warn;
+
+    # Security headers (placed early for clarity)
+    {% if nginx_enable_security_headers %}
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    {% endif %}
+
+    client_max_body_size {{ nginx_client_max_body_size | default('50M') }};
+
+    send_timeout 30s;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 90s;
+    proxy_send_timeout 60s;
+
+    # ACME challenge (for certbot / acme.sh webroot)
+    {% if nginx_enable_acme_challenge %}
+    location /.well-known/acme-challenge/ {
+        root {{ certbot_webroot | default('/var/www/certbot') }};
+        try_files $uri =404;
+    }
+    {% endif %}
+
+    # Host health (internal only)
+    location = /nginx_host_status {
+        stub_status on;
+        allow 127.0.0.1;
+        deny all;
+    }
+
+    # Proxy everything to the app backend upstream (container proxy splits routes)
+    location / {
+        proxy_pass http://{{ nginx_upstream_name | default('app_backend') }};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Preserve original protocol and host for downstream container proxy
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_cache_bypass $http_upgrade;
+
+        proxy_set_header X-Forwarded-Server $host;
+    }
+}

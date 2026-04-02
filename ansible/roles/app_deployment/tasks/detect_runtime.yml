@@ -1,0 +1,30 @@
+---
+- name: Initialize chosen_runtime to none
+  set_fact:
+    chosen_runtime: "none"
+
+- name: Check for podman binary
+  stat:
+    path: /usr/bin/podman
+  register: podman_bin
+
+- name: Check for docker binary
+  stat:
+    path: /usr/bin/docker
+  register: docker_bin
+
+- name: Set chosen_runtime to podman (if podman available)
+  set_fact:
+    chosen_runtime: "podman"
+  when: podman_bin.stat.exists
+
+- name: Set chosen_runtime to docker (if podman not available but docker is)
+  set_fact:
+    chosen_runtime: "docker"
+  when: 
+    - chosen_runtime == 'none'
+    - docker_bin.stat.exists
+
+- name: Debug chosen_runtime result
+  debug:
+    msg: "chosen_runtime={{ chosen_runtime }}"

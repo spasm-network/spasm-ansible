@@ -1,0 +1,62 @@
+---
+- name: Check if ss binary is available
+  command: which ss
+  register: ss_check
+  failed_when: false
+  changed_when: false
+
+- name: Fail if ss is not available
+  fail:
+    msg: "ss command not found. Install iproute2 or net-tools package and re-run."
+  when: ss_check.rc != 0
+
+- name: Wait for service port {{ host_port }} to be open on localhost
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ host_port | int }}"
+    state: started
+    timeout: "{{ compose_timeout | int }}"
+  register: wait_result
+  failed_when: wait_result is failed and ('Timeout' not in (wait_result.msg | default('') | string))
+
+- name: If wait_for succeeded mark port_listening true
+  set_fact:
+    port_listening: true
+  when: wait_result is succeeded
+
+- name: Check listening sockets for host_port as fallback (any address)
+  command: "ss -ltn"
+  register: ss_full
+  changed_when: false
+  failed_when: ss_full.rc not in [0, 1]
+  when: wait_result is failed
+
+- name: Determine whether port present in ss output (regex-verified with lookahead)
+  set_fact:
+    port_listening: >-
+      {{ (ss_full.stdout is defined) and
+         (ss_full.stdout | length > 0) and
+         (ss_full.stdout | regex_search(':' ~ (host_port | int) ~ '(?=\s)')) }}
+  when: wait_result is failed
+
+- name: Set port_listening to false if not already set
+  set_fact:
+    port_listening: false
+  when: wait_result is failed and port_listening is not defined
+
+- name: Fail if service port not open after compose
+  fail:
+    msg: "App does not appear to be listening on port {{ host_port }} after compose up. Check containers and logs in {{ app_clone_path }}."
+  when:
+    - wait_result is failed
+    - port_listening is not defined or port_listening == false
+
+- name: Ensure run_summary has timestamp if not already set
+  set_fact:
+    run_summary: "{{ run_summary | combine({'timestamp': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')}) }}"
+  when: run_summary is defined and run_summary is mapping and ('timestamp' not in run_summary)
+
+- name: Update run_summary with port status
+  set_fact:
+    run_summary: "{{ run_summary | combine({'port_open': (wait_result is succeeded) or (port_listening | bool)}) }}"
+  when: run_summary is defined and run_summary is mapping

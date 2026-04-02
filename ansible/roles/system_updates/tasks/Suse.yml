@@ -1,0 +1,36 @@
+---
+# SUSE/openSUSE system updates + auto-updates
+# Always runs; idempotent via command + changed_when
+
+- name: Ensure zypper non-interactive mode
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: "^ZYPPER_NON_INTERACTIVE="
+    line: "ZYPPER_NON_INTERACTIVE=1"
+    create: yes
+    state: present
+  become: yes
+
+- name: Refresh zypper repos
+  ansible.builtin.command: zypper --non-interactive refresh
+  become: yes
+  changed_when: false
+
+- name: Upgrade packages (distribution upgrade)
+  ansible.builtin.command: zypper --non-interactive dup
+  become: yes
+  register: zypper_result
+  changed_when: "'Nothing to do' not in zypper_result.stdout"
+
+- name: Install yast2-online-update-configuration
+  ansible.builtin.command: zypper --non-interactive install yast2-online-update-configuration
+  become: yes
+  register: yast_install
+  changed_when: yast_install.stdout_lines | length > 0
+
+- name: Enable online update service
+  ansible.builtin.systemd:
+    name: yast2-online-update.service
+    enabled: yes
+    state: started
+  become: yes

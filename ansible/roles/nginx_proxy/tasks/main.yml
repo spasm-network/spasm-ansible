@@ -1,0 +1,50 @@
+---
+- name: Include distro-specific package install
+  include_tasks: "install_{{ ansible_os_family | lower }}.yml"
+
+- name: Ensure nginx package is installed
+  package:
+    name: "{{ nginx_package | default('nginx') }}"
+    state: present
+
+- name: Ensure nginx service is enabled and started
+  service:
+    name: "{{ nginx_service_name | default('nginx') }}"
+    state: started
+    enabled: yes
+
+- name: Create directories for nginx site layout
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: /etc/nginx/sites-available }
+    - { path: /etc/nginx/sites-enabled }
+    - { path: "{{ certbot_webroot }}", owner: root, group: root, mode: '0755' }
+
+- name: Deploy nginx host reverse-proxy config (idempotent)
+  template:
+    src: proxy.conf.j2
+    dest: /etc/nginx/sites-available/{{ nginx_site_name }}
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Test and reload nginx
+
+- name: Ensure site is enabled (symlink)
+  file:
+    src: /etc/nginx/sites-available/{{ nginx_site_name }}
+    dest: /etc/nginx/sites-enabled/{{ nginx_site_name }}
+    state: link
+    force: yes
+  notify: Test and reload nginx
+
+- name: Optional:disable default site if configured
+  when: nginx_disable_default | default(true)
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Test and reload nginx

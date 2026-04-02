@@ -1,0 +1,50 @@
+---
+# Idempotent merging of environment variables into .env using lineinfile
+- name: Ensure .env file exists
+  file:
+    path: "{{ app_clone_path }}/.env"
+    state: touch
+    owner: "{{ owner }}"
+    group: "{{ group }}"
+    mode: "0600"
+  become: true
+  become_user: "{{ owner }}"
+
+- name: Fail if postgres_password not provided
+  fail:
+    msg: "postgres_password must be provided (set role var postgres_password) to populate .env"
+  when: (postgres_password | default('')) == ''
+
+- name: Ensure ADMINS in .env (add if provided)
+  lineinfile:
+    path: "{{ app_clone_path }}/.env"
+    regexp: '^ADMINS='
+    line: 'ADMINS="{{ admins }}"'
+    create: yes
+    state: present
+    backup: no
+  become: true
+  become_user: "{{ owner }}"
+  when: admins | trim != ''
+
+- name: Ensure POSTGRES_PASSWORD in .env (add if missing)
+  lineinfile:
+    path: "{{ app_clone_path }}/.env"
+    regexp: '^POSTGRES_PASSWORD='
+    line: 'POSTGRES_PASSWORD="{{ postgres_password }}"'
+    create: yes
+    state: present
+    backup: no
+  become: true
+  become_user: "{{ owner }}"
+
+- name: Ensure HOST_PORT in .env (add if missing)
+  lineinfile:
+    path: "{{ app_clone_path }}/.env"
+    regexp: '^HOST_PORT='
+    line: 'HOST_PORT={{ host_port | int }}'
+    create: yes
+    state: present
+    backup: no
+  become: true
+  become_user: "{{ owner }}"

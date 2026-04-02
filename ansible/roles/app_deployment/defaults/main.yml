@@ -1,0 +1,27 @@
+---
+# Defaults for app_deployment role
+user_name: "{{ lookup('env','USER_NAME') or 'user' }}"
+owner: "{{ user_name }}"
+group: "{{ user_name }}"
+admins: "{{ lookup('env','ADMINS') or '' }}"
+postgres_password: "{{ lookup('env','POSTGRES_PASSWORD') or '' }}"
+host_port: "{{ (lookup('env','HOST_PORT') or '33333') | int }}"
+app_repo_url: "https://github.com/spasm-network/spasm-docker"
+app_git_branch: "master"
+app_clone_path: "/home/{{ owner }}/spasm-docker"
+
+# logs_dir: defaults to playbook_dir/logs; override in play vars if playbook_dir is undefined
+logs_dir: "{{ playbook_dir | default(lookup('env','PWD') | default('/tmp')) }}/logs"
+logs_file: "{{ logs_dir }}/app_deployment_last_run.json"
+
+# App compose options
+compose_validate_config: true
+compose_pull_images: true
+compose_build: false
+compose_remove_orphans: true
+# compose_project_name: "spasm"
+compose_timeout: 60
+
+# run_summary default (initialized to avoid undefined guards)
+run_summary: {}
+

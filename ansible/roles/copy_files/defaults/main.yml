@@ -1,0 +1,7 @@
+---
+user_name: "{{ lookup('env','USER_NAME') or 'user' }}"
+admin_name: "{{ lookup('env','ADMIN_NAME') or 'admin' }}"
+copy_ssh_keys_from_root_to_user: true
+copy_ssh_keys_from_root_to_admin: false
+copy_ansible_from_root_to_user: true
+copy_ansible_from_root_to_admin: true

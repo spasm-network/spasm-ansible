@@ -1,0 +1,8 @@
+---
+- name: Ensure dnf/yum cache is up to date (RedHat)
+  command: "{{ item }}"
+  loop:
+    - dnf makecache --refresh
+    - yum makecache --refresh
+  changed_when: false
+  ignore_errors: yes

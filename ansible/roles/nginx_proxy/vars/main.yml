@@ -1,0 +1,15 @@
+---
+nginx_site_name: app-proxy
+nginx_server_name: "{{ ansible_fqdn | default('_') }}"
+nginx_backend_port: 33333
+nginx_client_max_body_size: 50M
+nginx_disable_default: true
+
+# Added/optional settings
+nginx_access_log: "/var/log/nginx/{{ nginx_site_name }}.access.log"
+nginx_error_log: "/var/log/nginx/{{ nginx_site_name }}.error.log"
+nginx_enable_security_headers: true
+nginx_enable_acme_challenge: true
+certbot_webroot: /var/www/certbot
+nginx_upstream_name: app_backend
+nginx_upstream_keepalive: 16

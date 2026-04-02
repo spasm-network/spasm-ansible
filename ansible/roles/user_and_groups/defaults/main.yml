@@ -1,0 +1,4 @@
+---
+user_name: "{{ lookup('env','USER_NAME') or 'user' }}"
+admin_name: "{{ lookup('env','ADMIN_NAME') or 'admin' }}"
+admin_password_hash: "{{ lookup('env','ADMIN_PASSWORD_HASH') or 'password' }}"
