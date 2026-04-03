@@ -1,4 +1,4 @@
-# PROJECT: Ansible Server Setup and Hardening Automation
+# PROJECT: Ansible Server Setup &amp; Hardening Automation
 
 DESCRIPTION:
 One-script setup for provisioning and hardening a fresh VPS from scratch. Supports 
@@ -15,12 +15,12 @@ Includes roles:
 - user/admin setup,
 - system_updates — distro-specific package upgrades + unattended-updates (deb/dnf/zypper), creates /var/run/reboot-required; reboots deferred to admin scripts.
 - auto-updates,
-- SSH hardening,
+- SSH hardening role — backups original configs, idempotently applies secure settings (port, root/password auth, etc.), validates with `sshd -t`, restarts, verifies SSH listens on new port with retries, auto-rolls back on failure, optional root lock (default true), prechecks port/admin user, logs to /var/log/ssh_hardening.log, runs after firewall_preopen and before firewall_enable, supports Debian/RHEL/SUSE.
 - firewall,
+- nginx_proxy — deploys an HTTP reverse proxy listening on 127.0.0.1:33333 (configurable via nginx_backend_port or HOST_PORT). It renders one shared proxy_common.conf (includes the websocket map) plus per-site unique upstreams named {{ nginx_site_name }}_backend. ACME challenge location is provided. HTTPS blocks are rendered conditionally using a deterministic certs_present check; if http_redirect_to_https is set but certs are absent the playbook fails. Template rendering is idempotent; websocket map is shared across sites and upstreams are unique per site.
+- ssl_certificate — automates Let's Encrypt provisioning via certbot. Obtains certs on first run, then runs `certbot install` every run (idempotent, no re-issue). Primary renewal via cron/systemd; safeguard cron at 4 AM auto-renews if expiring within 7 days. Backs up nginx config before edits; restores on failure. Logs all activity; alerts root if renewal fails. Safe to re-run; fixes config drift.
 - container_runtime — installs and validates container runtimes (default: podman) using distro-native packages (apt/dnf/zypper). It detects and enables the correct systemd unit (fails fast if unit files are missing), deploys a minimal /etc/containers/registries.conf for Podman when absent, performs a smoke test, and writes a simple install log. Docker's official repo is intentionally not added by this role; use a separate opt-in step if you need docker-ce.
-- SSL cert,
-- Nginx reverse proxy,
-- app deployment,
+- app_deployment — clones or updates app repo (hard-resets local changes), writes missing .env keys only (does not overwrite existing values), detects podman/docker, validates and runs compose, and performs a port smoke test; writes run_summary JSON to logs_dir on control machine.
 - management scripts.
 
 FOLDER STRUCTURE:
@@ -108,11 +108,9 @@ KEY NOTES:
    - No plaintext passwords stored anywhere
 
 9. NGINX & SSL:
-   - nginx_proxy: installs nginx, deploys HTTP reverse proxy to 127.0.0.1:33333,
-     prepares ACME challenge location, idempotent template + config validation.
-   - ssl_certificate: (next) obtains Let's Encrypt certs (staging→prod), updates
-     nginx config to terminate TLS, adds HTTP→HTTPS redirect.
-
+   - nginx_proxy: installs nginx, deploys HTTP reverse proxy to 127.0.0.1:33333, prepares ACME challenge location, idempotent template + config validation.
+   - ssl_certificate: obtains Lets Encrypt certs via `certbot --nginx` on first run (EXPIRING/MISSING), then runs `certbot install` every run to ensure HTTPS block is present (idempotent, does not re-issue certs, preserves certbot's modifications). Re-invokes nginx_proxy role every run to ensure template applied (fixes config drift). Primary renewal via cron/systemd daily (default 3 AM); safeguard cron at 4 AM auto-renews if cert expires within 7 days (gives certbot 23 days to renew first).
+   - Backs up nginx config before certbot edits; restores on failure. Logs all activity with timestamps to /var/log/letsencrypt/renewal-check.log; alerts root if renewal fails. Safeguard script uses `flock` to prevent concurrent runs. Safe to re-run; fixes config drift if something breaks.
 
 
 
@@ -154,3 +152,8 @@ Other notes:
 - SSL: use either certbot with lets encrypt without email address, or use staging→production ACME flow (acme.sh preferred for bootstrap automation); run staging first to validate automation. Store keys with 600 perms; implement expiry monitoring since email will be omitted.  
 - Defer reboots for auto-updates (optiona): install security updates but defer reboots; create /var/run/pending-reboot when reboot required; scripts/admin/server/reboot performs safe reboot on admin confirmation.  
 - Firewall: ensure Ansible SSH rule present before enabling firewall to avoid lockout.  
+
+
+
+
+

@@ -9,6 +9,8 @@
       admin_name: "{{ admin_name }}"
       admin_password_hash: "{{ admin_password_hash }}"
       new_ssh_port: "{{ new_ssh_port }}"
+      domain_name: "{{ domain_name }}"
+      nginx_site_name: "{{ nginx_site_name }}"
 
 - name: Print aggregated_info (structured)
   ansible.builtin.debug:

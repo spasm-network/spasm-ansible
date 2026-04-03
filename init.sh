@@ -48,13 +48,14 @@ DISTRO_NAME="${NAME:-unknown}"
 DISTRO_VERSION_ID="${VERSION_ID:-unknown}"
 DISTRO_VERSION_CODENAME="${VERSION_CODENAME:-unknown}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 
 # Assign a default value if it is unset or empty
 # USER="${USER_NAME:-user}"
 # ADMIN="${ADMIN_NAME:-admin}"
 DOMAIN_NAME="${DOMAIN_NAME:-}"
 ADMINS="${ADMINS:-}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+# ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
 # Assign a default value if it is unset or empty
 USER_NAME="${USER_NAME:-}"
@@ -78,7 +79,7 @@ echo_env_variables() {
   # echo "ADMIN: ${ADMIN}"
   echo "DOMAIN_NAME: ${DOMAIN_NAME}"
   echo "ADMINS: ${ADMINS}"
-  echo "ADMIN_PASSWORD: ${ADMIN_PASSWORD}"
+  echo "ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}"
 }
 
 get_domain_name() {
@@ -339,8 +340,8 @@ get_admin_password() {
   echo "admin events are directly signed with your private keys."
   local pass1 pass2 CHANGE_ANS COUNTDOWN_ORIGINAL COUNTDOWN KEY
 
-  if [ -n "${ADMIN_PASSWORD:-}" ]; then
-    echo "ADMIN_PASSWORD is set in .env."
+  if [ -n "${ADMIN_PASSWORD_HASH:-}" ]; then
+    echo "Admin password is found in .env."
     echo "Change password? (y/n) "
 
     COUNTDOWN_ORIGINAL=60
@@ -372,10 +373,10 @@ get_admin_password() {
 
     while true; do
       if [[ "${CHANGE_ANS}" =~ ^(y|Y|yes|Yes|YES)$ ]]; then
-        echo "Changing ADMIN_PASSWORD..."
+        echo "Changing admin password..."
         break
       elif [[ "${CHANGE_ANS}" =~ ^(n|N|no|No|NO)$ ]]; then
-        echo "Keeping existing ADMIN_PASSWORD."
+        echo "Keeping existing admin password."
         return 0
       else
         echo "Invalid input '${CHANGE_ANS}'. Type 'y' or 'n' and press enter."
@@ -396,8 +397,14 @@ get_admin_password() {
     fi
 
     if [ "$pass1" = "$pass2" ]; then
-      ADMIN_PASSWORD="$pass1"
+      # ADMIN_PASSWORD="$pass1"
+      ADMIN_PASSWORD_HASH=$(openssl passwd -6 "$pass1")
+      # ADMIN_PASSWORD=''
+      # unset ADMIN_PASSWORD
+      pass1=''
       pass2=''
+      unset pass1
+      unset pass2
       return 0
     else
       echo "Passwords do not match. Please try again."
@@ -416,14 +423,16 @@ generate_postgres_password_if_empty() {
   fi
 }
 
+# Using single quotes, otherwise bash interprets $6 as var
+# when sourcing the .env file
 save_variables_to_env_file() {
   echo "Let's save env vars"
   umask 077
   cat > ${ENV_FILE} <<EOF
-ADMINS="${ADMINS}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-DOMAIN_NAME="${SITE_TLD}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+ADMINS='${ADMINS}'
+ADMIN_PASSWORD_HASH='${ADMIN_PASSWORD_HASH}'
+DOMAIN_NAME='${SITE_TLD}'
+POSTGRES_PASSWORD='${POSTGRES_PASSWORD}'
 EOF
 }
 
@@ -559,6 +568,11 @@ run_test_playbook() {
     env_cmd+=(NEW_SSH_PORT="${NEW_SSH_PORT}")
   fi
 
+  # Use ADMINS as a temporary password before resetting
+  # it to a password provided by an operator.
+  # ADMIN_PASSWORD=${ADMINS}
+  # ADMIN_PASSWORD_HASH=$(openssl passwd -6 "$ADMIN_PASSWORD")
+
   if [ -n "${ADMIN_PASSWORD_HASH:-}" ]; then
     env_cmd+=(ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH}")
   fi
@@ -570,6 +584,14 @@ run_test_playbook() {
   if [ -n "${ADMINS:-}" ]; then
     env_cmd+=(ADMINS="${ADMINS}")
   fi
+
+  if [ -n "${DOMAIN_NAME:-}" ]; then
+    env_cmd+=(DOMAIN_NAME="${DOMAIN_NAME}")
+  fi
+
+  echo "${env_cmd}"
+  echo "ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}"
+  echo "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"
 
   # "${env_cmd[@]}" ansible-playbook -v "${TEST_PATH}"
   # "${env_cmd[@]}" ansible-playbook -vv "${TEST_PATH}"

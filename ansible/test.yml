@@ -18,13 +18,15 @@
 
     - role: system_updates
 
+    - role: firewall_preopen
+
     # - role: sshd_hardening
 
     # - role: firewall
 
     - role: nginx_proxy
 
-    # - role: ssl_certificate
+    - role: ssl_certificate
 
     - role: container_runtime
       vars:
