@@ -1,0 +1,31 @@
+---
+nginx_site_name: "{{ lookup('env','DOMAIN_NAME') or 'app-proxy' }}"
+nginx_backend_port: 33333
+nginx_upstream_host: 127.0.0.1
+# Upstream name includes site name to avoid collisions across multiple sites
+nginx_upstream_name: "{{ nginx_site_name | default('app-proxy') }}_backend"
+nginx_upstream_keepalive: 16
+nginx_client_max_body_size: 50M
+nginx_disable_default: true
+
+# Optional settings (override in playbook/inventory/.env)
+nginx_access_log: "/var/log/nginx/{{ nginx_site_name }}.access.log"
+nginx_error_log: "/var/log/nginx/{{ nginx_site_name }}.error.log"
+nginx_enable_security_headers: true
+nginx_enable_acme_challenge: true
+certbot_webroot: /var/www/certbot
+
+# SSL flag: disabled by default (fresh servers have no certs yet)
+# ssl_certificate role will set this to true after obtaining certs
+nginx_ssl_enabled: false
+
+# HTTP redirect to HTTPS (only used if certs exist)
+http_redirect_to_https: false
+
+# SSL certificate paths (set by ssl_certificate role after certs obtained)
+ssl_cert_path: ""
+ssl_key_path: ""
+
+# Conditional features
+nginx_enable_stub_status: true
+

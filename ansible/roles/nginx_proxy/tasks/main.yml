@@ -1,4 +1,8 @@
 ---
+- name: print nginx variables
+  debug:
+    msg: "nginx_site_name: {{ nginx_site_name }}, nginx_upstream_host: {{ nginx_upstream_host }}"
+
 - name: Include distro-specific package install
   include_tasks: "install_{{ ansible_os_family | lower }}.yml"
 
@@ -23,9 +27,56 @@
   loop:
     - { path: /etc/nginx/sites-available }
     - { path: /etc/nginx/sites-enabled }
+    - { path: /etc/nginx/conf.d }
     - { path: "{{ certbot_webroot }}", owner: root, group: root, mode: '0755' }
 
-- name: Deploy nginx host reverse-proxy config (idempotent)
+- name: Verify nginx includes sites-enabled directory
+  lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*include\s+/etc/nginx/sites-enabled/\*;'
+    line: "    include /etc/nginx/sites-enabled/*;"
+    insertafter: "^http {"
+    state: present
+  notify: Test and reload nginx
+
+- name: Deploy proxy common config (shared map definitions)
+  template:
+    src: proxy_common.conf.j2
+    dest: /etc/nginx/conf.d/proxy_common.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Test and reload nginx
+
+- name: Build domain_list from DOMAIN_NAME if needed
+  set_fact:
+    domain_list: >-
+      {{ [nginx_site_name] if (nginx_site_name is defined and nginx_site_name != 'app-proxy') else [] }}
+
+- name: Normalize domain_list (ensure list type; remove empty entries)
+  set_fact:
+    domain_list: "{{ (domain_list | default([])) | reject('equalto','') | list }}"
+
+- name: Debug domain list
+  debug:
+    msg: "domain_list: {{ domain_list }}, nginx_site_name: {{ nginx_site_name }}"
+
+- name: Check if SSL certificates exist (if provided)
+  stat:
+    path: "{{ ssl_cert_path | default('') }}"
+  register: ssl_cert_stat
+  when: ssl_cert_path is defined and ssl_cert_path | length > 0
+
+- name: Set certs_present fact (deterministic TLS rendering)
+  set_fact:
+    certs_present: "{{ (nginx_ssl_enabled | default(false)) and (ssl_cert_path | length > 0) and (ssl_cert_stat is defined and ssl_cert_stat.stat.exists) }}"
+
+- name: Fail if http_redirect_to_https requested but certs not present
+  fail:
+    msg: "http_redirect_to_https is true but TLS certs are not present (ssl_cert_path missing or not found)."
+  when: http_redirect_to_https | default(false) and not (certs_present | default(false))
+
+- name: Deploy nginx host reverse-proxy config (idempotent, per-site)
   template:
     src: proxy.conf.j2
     dest: /etc/nginx/sites-available/{{ nginx_site_name }}
@@ -48,3 +99,5 @@
     path: /etc/nginx/sites-enabled/default
     state: absent
   notify: Test and reload nginx
+
+

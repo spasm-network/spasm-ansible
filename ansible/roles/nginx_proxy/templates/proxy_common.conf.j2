@@ -1,0 +1,10 @@
+# proxy_common.conf - shared definitions across all sites
+# Placed in /etc/nginx/conf.d/ and loaded once by nginx main config
+# Avoids duplicate map/upstream definitions when multiple site files are enabled
+
+# Map $http_upgrade to $connection_upgrade for WebSocket support
+# Used by all site-specific proxy blocks
+map $http_upgrade $connection_upgrade {
+    default "";
+    ~*Upgrade "upgrade";
+}

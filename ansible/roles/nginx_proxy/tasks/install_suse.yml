@@ -1,0 +1,4 @@
+---
+- name: Refresh zypper cache (openSUSE)
+  command: zypper refresh
+  changed_when: false

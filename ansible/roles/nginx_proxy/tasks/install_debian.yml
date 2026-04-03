@@ -1,5 +1,5 @@
 ---
-- name: Ensure apt cache is up to date (Debian)
+- name: Refresh apt cache (Debian/Ubuntu)
   apt:
     update_cache: yes
     cache_valid_time: 3600

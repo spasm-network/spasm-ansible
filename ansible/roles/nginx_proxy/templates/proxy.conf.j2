@@ -1,20 +1,94 @@
-# Host nginx reverse proxy (idempotent). Terminates TLS later.
-# Proxies all traffic to local Docker/Podman mapped port (default 33333).
-# Upstream block for future extensibility / load balancing.
-upstream {{ nginx_upstream_name | default('app_backend') }} {
-    server 127.0.0.1:{{ nginx_backend_port | default(33333) }};
+# Per-site upstream (unique name to avoid collisions across multiple sites)
+upstream {{ nginx_upstream_name }} {
+    server {{ nginx_upstream_host }}:{{ nginx_backend_port | default(33333) }};
     keepalive {{ nginx_upstream_keepalive | default(16) }};
 }
 
+# HTTP server (port 80)
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name {{ nginx_server_name | default('_') }};
+    listen 80;
+    listen [::]:80;
+    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }}{% else %}_;{% endif %}
 
-    access_log {{ nginx_access_log | default('/var/log/nginx/app-proxy.access.log') }};
-    error_log  {{ nginx_error_log  | default('/var/log/nginx/app-proxy.error.log') }} warn;
+    access_log {{ nginx_access_log }};
+    error_log  {{ nginx_error_log }} warn;
 
-    # Security headers (placed early for clarity)
+    client_max_body_size {{ nginx_client_max_body_size | default('50M') }};
+
+    # Security headers
+    {% if nginx_enable_security_headers %}
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    {% endif %}
+
+    # Timeouts for upstream/proxy
+    send_timeout 30s;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 90s;
+    proxy_send_timeout 60s;
+
+    # ACME challenge location for webroot validation
+    {% if nginx_enable_acme_challenge %}
+    location /.well-known/acme-challenge/ {
+        root {{ certbot_webroot }};
+        try_files $uri =404;
+        allow all;
+    }
+    {% endif %}
+
+    # Health endpoint (internal) — conditional on nginx_enable_stub_status
+    {% if nginx_enable_stub_status %}
+    location = /nginx_host_status {
+        stub_status on;
+        allow 127.0.0.1;
+        deny all;
+    }
+    {% endif %}
+
+    # Proxy or redirect (mutually exclusive)
+    {% if http_redirect_to_https and certs_present %}
+    # Redirect HTTP to HTTPS (only if certs exist)
+    return 301 https://$host$request_uri;
+    {% else %}
+
+    # Proxy to container (default when no HTTPS redirect)
+    location / {
+        proxy_pass http://{{ nginx_upstream_name }};
+        proxy_http_version 1.1;
+
+        # Preserve original host/protocol and client IP for the downstream container proxy
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # WebSocket support (conditional Connection header via shared map)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_cache_bypass $http_upgrade;
+    }
+    {% endif %}
+
+}
+
+# HTTPS server block (only rendered if certs exist)
+{% if certs_present %}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }}{% else %}_;{% endif %}
+
+    access_log {{ nginx_access_log }};
+    error_log  {{ nginx_error_log }} warn;
+
+    client_max_body_size {{ nginx_client_max_body_size | default('50M') }};
+
     {% if nginx_enable_security_headers %}
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -22,46 +96,48 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     {% endif %}
 
-    client_max_body_size {{ nginx_client_max_body_size | default('50M') }};
+    # TLS certificate paths (set by ssl_certificate role)
+    ssl_certificate {{ ssl_cert_path }};
+    ssl_certificate_key {{ ssl_key_path }};
 
-    send_timeout 30s;
-    proxy_connect_timeout 10s;
-    proxy_read_timeout 90s;
-    proxy_send_timeout 60s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
 
-    # ACME challenge (for certbot / acme.sh webroot)
+    # Keep ACME webroot available over HTTPS as well
     {% if nginx_enable_acme_challenge %}
     location /.well-known/acme-challenge/ {
-        root {{ certbot_webroot | default('/var/www/certbot') }};
+        root {{ certbot_webroot }};
         try_files $uri =404;
     }
     {% endif %}
 
-    # Host health (internal only)
+    # Health endpoint (internal) — conditional on nginx_enable_stub_status
+    {% if nginx_enable_stub_status %}
     location = /nginx_host_status {
         stub_status on;
         allow 127.0.0.1;
         deny all;
     }
+    {% endif %}
 
-    # Proxy everything to the app backend upstream (container proxy splits routes)
     location / {
-        proxy_pass http://{{ nginx_upstream_name | default('app_backend') }};
+        proxy_pass http://{{ nginx_upstream_name }};
         proxy_http_version 1.1;
 
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        # Preserve original protocol and host for downstream container proxy
-        proxy_set_header X-Forwarded-Proto $scheme;
+        # Inform downstream container proxy that the original connection used HTTPS
+        proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
 
-        # WebSocket support
+        # WebSocket support (conditional Connection header via shared map)
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         proxy_cache_bypass $http_upgrade;
-
-        proxy_set_header X-Forwarded-Server $host;
     }
 }
+{% endif %}
+
+
