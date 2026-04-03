@@ -1,0 +1,152 @@
+# roles/firewall_preopen/tasks/main.yml
+---
+- name: Ensure facts are gathered
+  ansible.builtin.setup:
+  when: ansible_facts is not defined or ansible_facts['os_family'] is not defined
+
+- name: Load distro-specific variables
+  include_vars: "{{ role_path }}/vars/{{ ansible_facts.os_family }}.yml"
+
+- name: Assert distro variables loaded
+  ansible.builtin.assert:
+    that:
+      - firewall_backend is defined
+      - firewall_pkg is defined
+      - firewall_service_name is defined
+    fail_msg: "Unsupported OS family or missing role vars for {{ ansible_facts.os_family }}"
+
+- name: Check SELinux status (RedHat family only)
+  ansible.builtin.command: getenforce
+  register: _selinux_status
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'RedHat'
+  become: true
+
+- name: Warn if SELinux is enforcing (RedHat family)
+  ansible.builtin.debug:
+    msg: "WARNING: SELinux is {{ _selinux_status.stdout }}. If firewall-cmd fails, SELinux may be blocking access."
+  when:
+    - ansible_facts.os_family == 'RedHat'
+    - _selinux_status.stdout == 'Enforcing'
+
+- name: Ensure DEBIAN_FRONTEND noninteractive (Debian family only)
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: "^DEBIAN_FRONTEND="
+    line: "DEBIAN_FRONTEND=noninteractive"
+    create: yes
+    state: present
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - set_debian_env | default(true)
+  become: true
+
+- name: Ensure NEEDRESTART_MODE=a (Debian family only)
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: "^NEEDRESTART_MODE="
+    line: "NEEDRESTART_MODE=a"
+    create: yes
+    state: present
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - set_debian_env | default(true)
+  become: true
+
+- name: Install firewall package (Debian)
+  ansible.builtin.apt:
+    name: "{{ firewall_pkg }}"
+    state: present
+    update_cache: yes
+  when: ansible_facts.os_family == 'Debian'
+  become: true
+
+- name: Install firewall package (RedHat)
+  ansible.builtin.dnf:
+    name: "{{ firewall_pkg }}"
+    state: present
+  when: ansible_facts.os_family == 'RedHat'
+  become: true
+
+- name: Install firewall package (Suse)
+  ansible.builtin.zypper:
+    name: "{{ firewall_pkg }}"
+    state: present
+  when: ansible_facts.os_family == 'Suse'
+  become: true
+
+# UFW: ufw module is idempotent and works even when UFW is inactive.
+# No query needed; rule is added safely.
+- name: Pre-open SSH port (UFW)
+  ansible.builtin.ufw:
+    rule: allow
+    port: "{{ new_ssh_port | int }}"
+    proto: tcp
+    comment: "pre-open SSH port"
+  when: firewall_backend == 'ufw'
+  become: true
+
+# firewalld: query first to check if port rule already exists
+- name: Check if SSH port {{ new_ssh_port }} is already allowed in firewalld (permanent)
+  ansible.builtin.command: >
+    firewall-cmd --permanent --query-port={{ new_ssh_port | int }}/tcp
+  register: _firewall_query_port
+  changed_when: false
+  failed_when: _firewall_query_port.rc not in [0, 1]
+  timeout: 30
+  when: firewall_backend == 'firewalld'
+  become: true
+
+# Add port only if query returned non-zero (port not present)
+- name: Pre-open SSH port (firewalld permanent) if not already present
+  ansible.builtin.command: >
+    firewall-cmd --permanent --add-port={{ new_ssh_port | int }}/tcp
+  when:
+    - firewall_backend == 'firewalld'
+    - _firewall_query_port.rc != 0
+  register: _firewall_add_port
+  changed_when: _firewall_add_port.rc == 0
+  failed_when: _firewall_add_port.rc != 0
+  timeout: 30
+  become: true
+
+- name: Handle firewall-cmd failures (likely SELinux or permission issue)
+  ansible.builtin.fail:
+    msg: |
+      firewall-cmd failed to add port {{ new_ssh_port }}.
+      Command: firewall-cmd --permanent --add-port={{ new_ssh_port | int }}/tcp
+      Return code: {{ _firewall_add_port.rc }}
+      Stdout: {{ _firewall_add_port.stdout | default('(empty)') }}
+      Stderr: {{ _firewall_add_port.stderr | default('(empty)') }}
+      
+      On RedHat/CentOS, this is often due to:
+      - SELinux enforcing mode blocking firewall-cmd
+      - firewalld service not running
+      - Insufficient permissions (ensure become: true)
+  when:
+    - firewall_backend == 'firewalld'
+    - _firewall_add_port is defined
+    - _firewall_add_port.rc != 0
+
+# Reload firewalld only if we actually added a port
+- name: Reload firewalld to apply permanent changes
+  ansible.builtin.command: firewall-cmd --reload
+  when:
+    - firewall_backend == 'firewalld'
+    - _firewall_add_port is changed
+  timeout: 30
+  become: true
+
+# iptables legacy fallback (disabled by default)
+- name: Pre-open SSH port (iptables legacy) if enabled
+  ansible.builtin.command: >
+    /sbin/iptables -C INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT || /sbin/iptables -I INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT
+  when:
+    - firewall_backend == 'iptables'
+    - enable_iptables_fallback | default(false)
+  become: true
+  register: _iptables_result
+  changed_when: _iptables_result.rc == 0
+  failed_when: _iptables_result.rc not in [0, 1]
+  timeout: 30

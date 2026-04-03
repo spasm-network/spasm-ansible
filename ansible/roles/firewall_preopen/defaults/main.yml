@@ -1,0 +1,7 @@
+---
+# Role defaults
+new_ssh_port: "{{ (lookup('env','NEW_SSH_PORT') or '22') | int }}"
+# If true, role will ensure DEBIAN_FRONTEND and NEEDRESTART_MODE are set before apt actions (Debian family)
+set_debian_env: true
+# If true, allow an iptables fallback branch (disabled by default)
+enable_iptables_fallback: false

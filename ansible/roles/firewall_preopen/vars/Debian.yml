@@ -1,0 +1,5 @@
+---
+# Debian/Ubuntu specifics
+firewall_backend: ufw
+firewall_pkg: ufw
+firewall_service_name: ufw
