@@ -1,0 +1,8 @@
+---
+# SUSE specifics
+ssh_packages:
+  - openssh
+  - iproute2
+sshd_binary: /usr/sbin/sshd
+ssh_service_name: sshd
+ss_binary: /usr/bin/ss

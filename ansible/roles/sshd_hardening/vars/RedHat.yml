@@ -1,0 +1,9 @@
+---
+# RHEL/CentOS/Fedora specifics
+ssh_packages:
+  - openssh-server
+  - openssh-clients
+  - iproute
+sshd_binary: /usr/sbin/sshd
+ssh_service_name: sshd
+ss_binary: /usr/sbin/ss

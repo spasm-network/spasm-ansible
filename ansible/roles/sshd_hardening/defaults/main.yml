@@ -1,0 +1,25 @@
+---
+# SSH hardening defaults
+sshd_config_path: /etc/ssh/sshd_config
+extra_ssh_config_dir: /etc/ssh/sshd_config.d
+extra_ssh_config_backup_dir: /etc/ssh/sshd_config.d.bak
+new_ssh_port: "{{ (lookup('env','NEW_SSH_PORT') or '22') | int }}"
+
+# SSH hardening settings
+permit_root_login: "no"
+password_authentication: "no"
+permit_empty_password: "no"
+x11_forwarding: "no"
+max_auth_tries: 3
+max_sessions: 5
+client_alive_interval: 300
+client_alive_count_max: 2
+compression: "no"
+tcp_keep_alive: "yes"
+log_level: "VERBOSE"
+
+# Safety flags
+lock_root: true
+
+# Log path
+ssh_hardening_log: /var/log/ssh_hardening.log

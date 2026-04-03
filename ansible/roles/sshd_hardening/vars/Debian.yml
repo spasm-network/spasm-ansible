@@ -1,0 +1,9 @@
+---
+# Debian/Ubuntu specifics
+ssh_packages:
+  - openssh-server
+  - openssh-client
+  - iproute2
+sshd_binary: /usr/sbin/sshd
+ssh_service_name: ssh
+ss_binary: /bin/ss
