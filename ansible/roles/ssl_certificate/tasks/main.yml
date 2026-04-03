@@ -1,4 +1,8 @@
 ---
+- name: print ssl variables
+  debug:
+    msg: "ssl_domain: {{ ssl_domain }}, ssl_nginx_conf: {{ ssl_nginx_conf }}"
+
 - name: Ensure nginx is running and active (prerequisite)
   service:
     name: nginx
@@ -7,11 +11,36 @@
   register: nginx_status
   failed_when: nginx_status.state != "started"
 
+- name: Install certbot and nginx plugin (Debian/Ubuntu)
+  apt:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Install certbot and nginx plugin (RedHat/CentOS/Fedora)
+  dnf:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Install certbot and nginx plugin (openSUSE)
+  zypper:
+    name:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+  when: ansible_os_family == "Suse"
+
 - name: Assert ssl_domain is defined and looks like a domain
   assert:
     that:
       - ssl_domain is defined
-      - ssl_domain | regex_search('^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$')
+      - ssl_domain | length > 0
+      - ssl_domain is match('^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
     fail_msg: "ssl_domain must be set to a valid domain (example: example.com or app.example.com)"
 
 - name: Build final certbot domain list (handles bare labels and full domains)
@@ -53,15 +82,17 @@
     group: root
     mode: '0755'
 
-- name: Check if certificate exists and is valid (>30 days)
+- name: Check if certificate exists and is valid (> 30 days)
   shell: |
     set -e
     cert_dir="{{ ssl_cert_path }}"
+
     if [ -f "$cert_dir/fullchain.pem" ]; then
       expiry=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" | cut -d= -f2)
       expiry_epoch=$(date -d "$expiry" +%s)
       now_epoch=$(date +%s)
       days_left=$(( ($expiry_epoch - $now_epoch) / 86400 ))
+
       if [ $days_left -gt 30 ]; then
         echo "VALID"
       else
@@ -75,7 +106,7 @@
   register: cert_status
   changed_when: false
 
-- name: Remove existing certificate directory if expiring or missing (allow certbot to replace)
+- name: Remove existing certificate directory (allow certbot to replace)
   file:
     path: "{{ ssl_cert_path }}"
     state: absent
@@ -118,10 +149,9 @@
         chdir: /
       register: certbot_run_retry
       until: certbot_run_retry.rc == 0
-      retries: 3
+      retries: 1
       delay: 5
-      when: certbot_run.rc != 0 and
-            not (certbot_run.stderr is search("rate limited|too many requests|Too many"))
+      when: certbot_run.rc != 0 and not (certbot_run.stderr is search("rate limited|too many requests|Too many"))
 
   when: cert_status.stdout in ["EXPIRING", "MISSING"]
 
@@ -147,18 +177,54 @@
     owner: root
     group: root
     mode: '0644'
-  when: nginx_test is defined and nginx_test.rc != 0
+  when: (cert_status.stdout in ["EXPIRING", "MISSING"]) and (nginx_test.rc is defined and nginx_test.rc != 0)
 
 - name: Fail if nginx test fails
   fail:
     msg: "nginx config test failed after certbot edits: {{ nginx_test.stderr | default(nginx_test.stdout) }}"
-  when: nginx_test is defined and nginx_test.rc != 0
+  when: (cert_status.stdout in ["EXPIRING", "MISSING"]) and (nginx_test.rc is defined and nginx_test.rc != 0)
 
 - name: Reload nginx (only if config valid and certbot made changes)
   service:
     name: nginx
     state: reloaded
-  when: (nginx_test is defined and nginx_test.rc == 0) or (cert_status.stdout == "VALID" and false)
+  when: (nginx_test is defined and nginx_test.rc is defined and nginx_test.rc == 0) or (cert_status.stdout == "VALID" and false)
+
+- name: Re-invoke nginx_proxy role to render HTTPS block with cert paths
+  include_role:
+    name: nginx_proxy
+  vars:
+    nginx_ssl_enabled: true
+    ssl_cert_path: "/etc/letsencrypt/live/{{ ssl_domain }}/fullchain.pem"
+    ssl_key_path: "/etc/letsencrypt/live/{{ ssl_domain }}/privkey.pem"
+  # Option 1. Always update nginx config (no when)
+  # This option overwrites certbot's modifications (including
+  # its comments and markers), which are used for renewal.
+  # Option 2. Only update nginx config if cert is valid
+  # when: cert_status.stdout in ["VALID", "EXPIRING", "MISSING"]
+  # Option 3. Only update nginx config after cert was optained
+  # when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Ensure HTTPS block is installed in nginx (idempotent, no cert re-issue)
+  command: >
+    "{{ certbot_path.stdout }}" install --nginx --cert-name {{ ssl_cert_name | default(ssl_domain) }}
+    --noninteractive
+  args:
+    chdir: /
+  register: certbot_install
+  failed_when: certbot_install.rc not in [0, 1]
+  changed_when: false
+
+- name: Test nginx configuration after certbot install
+  command: nginx -t
+  register: nginx_test_install
+  failed_when: nginx_test_install.rc != 0
+
+- name: Reload nginx if install succeeded
+  service:
+    name: nginx
+    state: reloaded
+  when: nginx_test_install.rc is defined and nginx_test_install.rc == 0
 
 - name: Check if distro-managed renewal exists (systemd timer)
   command: systemctl is-enabled certbot.timer
@@ -171,13 +237,13 @@
   register: certbot_which
   changed_when: false
 
-- name: Create /var/log/letsencrypt directory
+- name: Ensure /var/log/letsencrypt directory exists and is writable
   file:
     path: /var/log/letsencrypt
     state: directory
     owner: root
     group: root
-    mode: '0750'
+    mode: '0755'
 
 - name: Create cron renewal job if no systemd timer
   cron:
@@ -185,6 +251,66 @@
     minute: "0"
     hour: "{{ ssl_renewal_hour }}"
     job: "{{ certbot_which.stdout | default('/usr/bin/certbot') }} renew --quiet >> /var/log/letsencrypt/renew.log 2>&1"
+    user: root
+  when: systemd_timer_check.rc != 0
+
+- name: Create renewal safeguard script
+  copy:
+    dest: /usr/local/bin/certbot-renewal-safeguard.sh
+    mode: '0755'
+    owner: root
+    group: root
+    content: |
+      #!/bin/bash
+      set -o pipefail
+      
+      CERT_PATH="/etc/letsencrypt/live/{{ ssl_domain }}/fullchain.pem"
+      LOG="/var/log/letsencrypt/renewal-check.log"
+      LOCK="/var/lock/letsencrypt-renewal.lock"
+      DOMAIN="{{ ssl_domain }}"
+      CERT_NAME="{{ ssl_cert_name | default(ssl_domain) }}"
+      CERTBOT_PATH="{{ certbot_path.stdout }}"
+      
+      # Prevent concurrent runs
+      (
+        flock -n 9 || { echo "$(date -Iseconds) INFO: Renewal already in progress, skipping" >> "$LOG"; exit 0; }
+        
+        if [ ! -f "$CERT_PATH" ]; then
+          exit 0
+        fi
+        
+        # Check if cert expires within 7 days
+        if /usr/bin/openssl x509 -checkend $((7*86400)) -noout -in "$CERT_PATH" >/dev/null 2>&1; then
+          : # certificate valid for >7 days, no action needed
+        else
+          mkdir -p "$(dirname "$LOG")"
+          printf '%s ALERT: Certificate for %s expires within 7 days. Attempting renewal...\n' "$(date -Iseconds)" "$DOMAIN" >> "$LOG"
+          
+          # Run certbot with deploy hook to reload nginx after successful renewal
+          "$CERTBOT_PATH" renew --cert-name "$CERT_NAME" --quiet --deploy-hook "systemctl reload nginx" >> "$LOG" 2>&1
+          RENEW_RC=$?
+          
+          # Verify renewal succeeded
+          if /usr/bin/openssl x509 -checkend $((30*86400)) -noout -in "$CERT_PATH" >/dev/null 2>&1; then
+            printf '%s SUCCESS: Certificate for %s renewed successfully\n' "$(date -Iseconds)" "$DOMAIN" >> "$LOG"
+          else
+            printf '%s CRITICAL: Renewal failed for %s - certificate still expires within 30 days\n' "$(date -Iseconds)" "$DOMAIN" >> "$LOG"
+            
+            # Try to send alert (mail may not be available)
+            if command -v mail >/dev/null 2>&1; then
+              echo "CRITICAL: Certificate renewal failed for $DOMAIN. Check $LOG for details." | mail -s "Cert Renewal Failed: $DOMAIN" root 2>/dev/null || true
+            fi
+          fi
+        fi
+      ) 9>"$LOCK"
+
+- name: Create renewal verification cron job
+  cron:
+    name: "Let's Encrypt renewal verification and safeguard"
+    minute: "0"
+    hour: "4"
+    day: "*"
+    job: "/usr/local/bin/certbot-renewal-safeguard.sh"
     user: root
   when: systemd_timer_check.rc != 0
 

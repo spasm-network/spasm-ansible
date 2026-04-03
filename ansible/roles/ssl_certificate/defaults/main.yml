@@ -1,8 +1,25 @@
 ---
-# Defaults (can be overridden)
-ssl_domain: "{{ DOMAIN_NAME | default(domain) }}"
-ssl_enable_http_to_https_redirect: true
-ssl_renewal_hour: 3
+# Primary domain (required) — set DOMAIN_NAME in environment via init.sh
+ssl_domain: "{{ lookup('env','DOMAIN_NAME') or '' }}"
+
+# Subdomains to include in the cert (bare labels expanded to label.ssl_domain)
+# Default empty — operator adds what they need
 ssl_subdomains: []
+
+# HTTP → HTTPS redirect via certbot --redirect
+ssl_enable_http_to_https_redirect: true
+
+# Hour for daily renewal cron job (if no systemd timer)
+ssl_renewal_hour: 3
+
+# Certificate live path (certbot default)
+ssl_cert_path: "/etc/letsencrypt/live/{{ ssl_domain }}"
+
+# Nginx site config file to back up before certbot edits
+ssl_nginx_conf: "/etc/nginx/sites-available/{{ nginx_site_name }}"
+
+# Webroot for ACME challenges (kept for compatibility, not used by --nginx)
 certbot_webroot: /var/www/html
-ssl_cert_name: ""
+
+# Cert name passed to certbot --cert-name (defaults to ssl_domain if empty)
+ssl_cert_name: "{{ ssl_domain }}"
