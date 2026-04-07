@@ -1,4 +1,6 @@
-# PROJECT: Ansible Server Setup &amp; Hardening Automation
+WIP: don't use in production yet. If you want to launch an instance now, then deploy using [docker/podman](https://github.com/spasm-network/spasm-docker). Once this repo is ready for prod, there will be a proper instruction and announcement.
+
+# Ansible Server Setup &amp; Hardening Automation
 
 DESCRIPTION:
 One-script setup for provisioning and hardening a fresh VPS from scratch. Supports 
@@ -17,7 +19,7 @@ Includes roles:
 - auto-updates,
 - SSH hardening role — backups original configs, idempotently applies secure settings (port, root/password auth, etc.), validates with `sshd -t`, restarts, verifies SSH listens on new port with retries, auto-rolls back on failure, optional root lock (default true), prechecks port/admin user, logs to /var/log/ssh_hardening.log, runs after firewall_preopen and before firewall_enable, supports Debian/RHEL/SUSE.
 - firewall,
-- nginx_proxy — deploys an HTTP reverse proxy listening on 127.0.0.1:33333 (configurable via nginx_backend_port or HOST_PORT). It renders one shared proxy_common.conf (includes the websocket map) plus per-site unique upstreams named {{ nginx_site_name }}_backend. ACME challenge location is provided. HTTPS blocks are rendered conditionally using a deterministic certs_present check; if http_redirect_to_https is set but certs are absent the playbook fails. Template rendering is idempotent; websocket map is shared across sites and upstreams are unique per site.
+- nginx_proxy — deploys an HTTP reverse proxy listening on 127.0.0.1:33333 (configurable via nginx_backend_port or HOST_PORT). It renders one shared websocket.conf (includes the websocket map) plus per-site unique upstreams named {{ nginx_site_name }}_backend. ACME challenge location is provided. HTTPS blocks are rendered conditionally using a deterministic certs_present check; if http_redirect_to_https is set but certs are absent the playbook fails. Template rendering is idempotent; websocket map is shared across sites and upstreams are unique per site.
 - ssl_certificate — automates Let's Encrypt provisioning via certbot. Obtains certs on first run, then runs `certbot install` every run (idempotent, no re-issue). Primary renewal via cron/systemd; safeguard cron at 4 AM auto-renews if expiring within 7 days. Backs up nginx config before edits; restores on failure. Logs all activity; alerts root if renewal fails. Safe to re-run; fixes config drift.
 - container_runtime — installs and validates container runtimes (default: podman) using distro-native packages (apt/dnf/zypper). It detects and enables the correct systemd unit (fails fast if unit files are missing), deploys a minimal /etc/containers/registries.conf for Podman when absent, performs a smoke test, and writes a simple install log. Docker's official repo is intentionally not added by this role; use a separate opt-in step if you need docker-ce.
 - app_deployment — clones or updates app repo (hard-resets local changes), writes missing .env keys only (does not overwrite existing values), detects podman/docker, validates and runs compose, and performs a port smoke test; writes run_summary JSON to logs_dir on control machine.
