@@ -8,7 +8,7 @@ upstream {{ nginx_upstream_name }} {
 server {
     listen 80;
     listen [::]:80;
-    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }}{% else %}_;{% endif %}
+    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }};{% else %}_;{% endif %}
 
     access_log {{ nginx_access_log }};
     error_log  {{ nginx_error_log }} warn;
@@ -80,9 +80,11 @@ server {
 {% if certs_present %}
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }}{% else %}_;{% endif %}
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+
+    server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }};{% else %}_;{% endif %}
 
     access_log {{ nginx_access_log }};
     error_log  {{ nginx_error_log }} warn;

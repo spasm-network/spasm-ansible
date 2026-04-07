@@ -8,7 +8,7 @@
 - Idempotent, test-before-reload workflow to avoid service disruption.
 
 ## Quick concept
-- Shared nginx items used by all sites (map for websocket handling) are deployed once to /etc/nginx/conf.d/proxy_common.conf.
+- Shared nginx items used by all sites (map for websocket handling) are deployed once to /etc/nginx/conf.d/websocket.conf.
 - Each site gets a per-site config under /etc/nginx/sites-available/<nginx_site_name> and a symlink into sites-enabled.
 - Each site defines its own upstream named <nginx_site_name>_backend pointing at nginx_upstream_host:nginx_backend_port to avoid upstream name collisions.
 - Templates are safe to re-run; nginx config is tested (nginx -t) and only reloaded on success. On failures, the handler logs the failing site config for debugging and fails the playbook with test output.
@@ -29,7 +29,7 @@
 - Creation:
   - Ensures nginx package installed and service enabled.
   - Creates /etc/nginx/sites-available, /etc/nginx/sites-enabled, /etc/nginx/conf.d, and the ACME webroot (certbot_webroot).
-  - Deploys /etc/nginx/conf.d/proxy_common.conf (map for websockets).
+  - Deploys /etc/nginx/conf.d/websocket.conf (map for websockets).
   - Renders per-site /etc/nginx/sites-available/{{ nginx_site_name }} from proxy.conf.j2.
   - Ensures symlink exists in /etc/nginx/sites-enabled and optionally removes default site.
 
@@ -45,7 +45,7 @@
   - Users may override nginx_upstream_name intentionally to share an upstream.
 
 - WebSocket support:
-  - Global map ($http_upgrade → $connection_upgrade) in proxy_common.conf used by all site configs so Connection header can be set safely per-request.
+  - Global map ($http_upgrade → $connection_upgrade) in websocket.conf used by all site configs so Connection header can be set safely per-request.
 
 - Config testing and reload:
   - Handled atomically in a handler that runs nginx -t and reloads nginx on success.
@@ -60,7 +60,7 @@
 
 ## Files of interest
 - tasks/main.yml — orchestration, cert existence check, certs_present fact, template deploys.
-- templates/proxy_common.conf.j2 — shared map definitions.
+- templates/websocket.conf.j2 — shared map definitions.
 - templates/proxy.conf.j2 — per-site config (per-site upstream + HTTP/HTTPS server blocks).
 - handlers/main.yml — nginx -t + atomic reload logic.
 

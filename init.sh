@@ -204,7 +204,7 @@ get_domain_name() {
   # due to privacy reasons.
   sleep 5
 
-  # Temporary disable exitting on error to check the domain name.
+  # Temporary disable exiting on error to check the domain name.
   set +e
 
   # Ping the domain
@@ -240,7 +240,7 @@ get_domain_name() {
     if [[ "${IF_PROCEED_ERROR}" =~ ^(yes|y|Yes|YES)$ ]]; then
         echo "Continuing the script..."
     else
-        echo "Exitting the script."
+        echo "Exiting the script."
         exit 0
     fi
   fi
