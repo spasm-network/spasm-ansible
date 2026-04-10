@@ -9,6 +9,7 @@
       - ca-certificates
       - gnupg
       - curl
+      - git
     state: present
     update_cache: yes
 

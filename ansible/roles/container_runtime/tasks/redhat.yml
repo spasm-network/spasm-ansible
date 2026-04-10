@@ -8,6 +8,7 @@
       - dnf-plugins-core
       - curl
       - ca-certificates
+      - git
     state: present
 
 - name: Install container runtime package (RedHat)

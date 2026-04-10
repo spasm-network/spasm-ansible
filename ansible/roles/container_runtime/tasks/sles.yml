@@ -6,6 +6,12 @@
   zypper:
     update_cache: yes
 
+- name: Ensure git present (SLES)
+  become: true
+  zypper:
+    name: git
+    state: present
+
 - name: Install container runtime package (SLES)
   become: true
   zypper:
