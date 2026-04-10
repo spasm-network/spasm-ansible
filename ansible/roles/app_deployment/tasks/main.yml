@@ -34,6 +34,10 @@
 - name: Include detect runtime task
   include_tasks: detect_runtime.yml
 
+- name: Setup podman auto-start (if using podman)
+  include_tasks: podman_autostart.yml
+  when: chosen_runtime == 'podman'
+
 - name: Include compose lifecycle task
   include_tasks: compose_lifecycle.yml
 

@@ -1,0 +1,137 @@
+---
+- name: Enable linger for {{ owner }}
+  command: loginctl enable-linger {{ owner }}
+  become: true
+  become_user: root
+  register: linger_result
+  changed_when: linger_result.rc == 0
+
+- name: Create user systemd directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ owner }}"
+    group: "{{ owner }}"
+    mode: 0700
+  loop:
+    - "/home/{{ owner }}/.config/systemd/user"
+    - "/home/{{ owner }}/.local/bin"
+    - "/home/{{ owner }}/.local/share"
+
+- name: Get owner UID
+  command: id -u {{ owner }}
+  register: owner_uid_result
+  changed_when: false
+
+- name: Set owner_uid fact
+  set_fact:
+    owner_uid: "{{ owner_uid_result.stdout | trim }}"
+
+- name: Check subuid entry exists
+  command: grep -q "^{{ owner }}:" /etc/subuid
+  register: subuid_check
+  failed_when: false
+  changed_when: false
+
+- name: Add subuid entry if missing
+  lineinfile:
+    path: /etc/subuid
+    line: "{{ owner }}:100000:65536"
+  when: subuid_check.rc != 0
+
+- name: Check subgid entry exists
+  command: grep -q "^{{ owner }}:" /etc/subgid
+  register: subgid_check
+  failed_when: false
+  changed_when: false
+
+- name: Add subgid entry if missing
+  lineinfile:
+    path: /etc/subgid
+    line: "{{ owner }}:100000:65536"
+  when: subgid_check.rc != 0
+
+- name: Check if app provides custom auto-start script
+  stat:
+    path: "{{ app_clone_path }}/podman/auto-start.sh"
+  register: app_custom_script
+  changed_when: false
+
+- name: Use app's custom auto-start script if present
+  copy:
+    src: "{{ app_clone_path }}/podman/auto-start.sh"
+    dest: "/home/{{ owner }}/.local/bin/podman-auto-start-spasm.sh"
+    owner: "{{ owner }}"
+    group: "{{ owner }}"
+    mode: 0755
+  when: app_custom_script.stat.exists
+  register: script_installed_custom
+
+- name: Use default auto-start script from role
+  template:
+    src: podman-auto-start.sh.j2
+    dest: "/home/{{ owner }}/.local/bin/podman-auto-start-spasm.sh"
+    owner: "{{ owner }}"
+    group: "{{ owner }}"
+    mode: 0755
+  when: not app_custom_script.stat.exists
+  register: script_installed_default
+
+- name: Check if app provides custom auto-start service
+  stat:
+    path: "{{ app_clone_path }}/podman/auto-start.service"
+  register: app_custom_service
+  changed_when: false
+
+- name: Use app's custom auto-start service if present
+  copy:
+    src: "{{ app_clone_path }}/podman/auto-start.service"
+    dest: "/home/{{ owner }}/.config/systemd/user/podman-auto-start-spasm.service"
+    owner: "{{ owner }}"
+    group: "{{ owner }}"
+    mode: 0644
+  when: app_custom_service.stat.exists
+  register: service_installed_custom
+
+- name: Use default auto-start service from role
+  template:
+    src: podman-auto-start.service.j2
+    dest: "/home/{{ owner }}/.config/systemd/user/podman-auto-start-spasm.service"
+    owner: "{{ owner }}"
+    group: "{{ owner }}"
+    mode: 0644
+  when: not app_custom_service.stat.exists
+  register: service_installed_default
+
+- name: Reload user systemd daemon
+  become: true
+  command: "systemctl --user --machine={{ owner }}@ daemon-reload"
+  register: daemon_reload
+  failed_when: false
+  changed_when: false
+
+- name: Enable podman socket for user
+  become: true
+  command: "systemctl --user --machine={{ owner }}@ enable podman.socket"
+  register: socket_enable
+  failed_when: false
+  changed_when: socket_enable.rc == 0
+
+- name: Enable auto-start service
+  become: true
+  command: "systemctl --user --machine={{ owner }}@ enable podman-auto-start-spasm.service"
+  register: service_enable
+  failed_when: false
+  changed_when: service_enable.rc == 0
+
+- name: Populate autostart status in run_summary
+  set_fact:
+    run_summary: >-
+      {{ run_summary | combine({
+        'autostart_linger_enabled': (linger_result.rc == 0),
+        'autostart_script_source': ('app_custom' if app_custom_script.stat.exists else 'role_default'),
+        'autostart_service_source': ('app_custom' if app_custom_service.stat.exists else 'role_default'),
+        'autostart_socket_enabled': (socket_enable.rc == 0),
+        'autostart_service_enabled': (service_enable.rc == 0)
+      }) }}
+  when: run_summary is defined and run_summary is mapping

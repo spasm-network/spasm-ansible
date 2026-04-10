@@ -49,18 +49,36 @@
       become_user: "{{ owner }}"
       register: _reset_init
       failed_when: _reset_init.rc != 0
+
+    - name: Create local branch and set upstream to origin/{{ app_git_branch | default('master') }}
+      command: git checkout -B "{{ app_git_branch | default('master') }}" --track "origin/{{ app_git_branch | default('master') }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
   when:
     - app_repo_url != ""
     - not repo_gitdir.stat.exists
 
-- name: Ensure repository is on the requested branch (create local branch if needed)
-  command: git checkout -B "{{ app_git_branch | default('master') }}"
-  args:
-    chdir: "{{ app_clone_path }}"
-  become: true
-  become_user: "{{ owner }}"
-  register: _checkout
-  changed_when: "'Switched to' in (_checkout.stdout | default('')) or 'Created' in (_checkout.stdout | default(''))"
+- name: Ensure repository is on the requested branch and tracking origin/{{ app_git_branch | default('master') }}
+  block:
+    - name: Checkout branch (create if missing) and set upstream
+      command: git checkout -B "{{ app_git_branch | default('master') }}" --track "origin/{{ app_git_branch | default('master') }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+      register: _checkout
+      changed_when: "'Switched to' in (_checkout.stdout | default('')) or 'Created' in (_checkout.stdout | default(''))"
+
+    - name: Ensure branch has upstream configured (idempotent)
+      command: >
+        /bin/sh -c "git rev-parse --abbrev-ref --symbolic-full-name @{u} > /dev/null 2>&1 || git branch --set-upstream-to=origin/{{ app_git_branch | default('master') }} {{ app_git_branch | default('master') }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+      failed_when: false
   when: app_repo_url != ""
 
 - name: Fetch latest from origin for existing repo

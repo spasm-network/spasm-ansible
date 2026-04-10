@@ -1,0 +1,13 @@
+[Unit]
+Description=Auto-start Podman Compose projects (spasm-docker*)
+After=network-online.target podman.socket
+Wants=network-online.target podman.socket
+
+[Service]
+Type=oneshot
+ExecStartPre=systemctl
+ExecStart=%h/.local/bin/podman-auto-start-spasm.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target
