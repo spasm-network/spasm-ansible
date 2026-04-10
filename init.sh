@@ -216,6 +216,7 @@ get_domain_name() {
   if [ $? -eq 0 ]; then
     echo -e "The domain ${ACCENT}${BOLD}${SITE_TLD}${NC} can be resolved."
     echo "Proceeding..."
+    DOMAIN_NAME=${SITE_TLD}
   else
     echo -e "ERROR: The domain ${ACCENT}${BOLD}${SITE_TLD}${NC} cannot be resolved."
     echo "Make sure that you've configured DNS records,"
@@ -239,6 +240,7 @@ get_domain_name() {
 
     if [[ "${IF_PROCEED_ERROR}" =~ ^(yes|y|Yes|YES)$ ]]; then
         echo "Continuing the script..."
+        DOMAIN_NAME=${SITE_TLD}
     else
         echo "Exiting the script."
         exit 0
