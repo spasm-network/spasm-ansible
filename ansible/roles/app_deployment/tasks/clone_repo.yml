@@ -1,4 +1,4 @@
-- name: Ensure repo ownership is correct
+- name: Ensure repo base directory exists with correct ownership
   file:
     path: "{{ app_clone_path }}"
     state: directory
@@ -6,52 +6,85 @@
     group: "{{ group }}"
     recurse: true
   become: true
-  when:
-    - app_repo_url != ""
+  when: app_repo_url != ""
 
-- name: Check if repo exists (fresh stat for fetch/reset block)
+- name: Check for existing .git directory
   stat:
-    path: "{{ app_clone_path }}"
-  register: repo_exists_now
+    path: "{{ app_clone_path }}/.git"
+  register: repo_gitdir
   become: true
+  when: app_repo_url != ""
+
+- name: Initialize git repo in-place when absent (preserve existing files)
+  block:
+    - name: Init empty git repo
+      command: git init
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+
+    - name: Add remote origin
+      command: git remote add origin "{{ app_repo_url }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+      failed_when: false
+
+    - name: Fetch remote branch (shallow)
+      command: git fetch --no-tags --depth=1 origin "{{ app_git_branch | default('master') }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+      register: _fetch_init
+      failed_when: _fetch_init.rc != 0
+
+    - name: Reset working tree to origin/{{ app_git_branch }} (initial)
+      command: git reset --hard "origin/{{ app_git_branch | default('master') }}"
+      args:
+        chdir: "{{ app_clone_path }}"
+      become: true
+      become_user: "{{ owner }}"
+      register: _reset_init
+      failed_when: _reset_init.rc != 0
   when:
     - app_repo_url != ""
+    - not repo_gitdir.stat.exists
 
-- name: Fetch and hard-reset to remote branch when repo exists
-  block:
-    - name: Check for local changes before reset
-      command: git status --porcelain
-      args:
-        chdir: "{{ app_clone_path }}"
-      become: true
-      become_user: "{{ owner }}"
-      register: _git_status
-      changed_when: false
+- name: Ensure repository is on the requested branch (create local branch if needed)
+  command: git checkout -B "{{ app_git_branch | default('master') }}"
+  args:
+    chdir: "{{ app_clone_path }}"
+  become: true
+  become_user: "{{ owner }}"
+  register: _checkout
+  changed_when: "'Switched to' in (_checkout.stdout | default('')) or 'Created' in (_checkout.stdout | default(''))"
+  when: app_repo_url != ""
 
-    - name: Fetch latest from origin
-      command: git fetch origin
-      args:
-        chdir: "{{ app_clone_path }}"
-      become: true
-      become_user: "{{ owner }}"
-      register: _fetch
-      failed_when: _fetch.rc != 0
-      changed_when: "'Already up to date.' not in (_fetch.stdout | default(''))"
+- name: Fetch latest from origin for existing repo
+  command: git fetch origin
+  args:
+    chdir: "{{ app_clone_path }}"
+  become: true
+  become_user: "{{ owner }}"
+  register: _fetch
+  failed_when: _fetch.rc != 0
+  changed_when: "'Already up to date.' not in (_fetch.stdout | default(''))"
+  when:
+    - app_repo_url != ""
+    - repo_gitdir.stat.exists
 
-    - name: Reset working tree to origin/{{ app_git_branch }}
-      command: git reset --hard "origin/{{ app_git_branch }}"
-      args:
-        chdir: "{{ app_clone_path }}"
-      become: true
-      become_user: "{{ owner }}"
-      register: _reset
-      failed_when: _reset.rc != 0
-      changed_when: "'HEAD is now at' in (_reset.stdout | default('')) or 'Updating' in (_reset.stdout | default(''))"
-
-  #   - name: Warn if local changes were discarded
-  #     debug:
-  #       msg: "WARNING: Git repo had local changes that were discarded during reset to origin/{{ app_git_branch }}"
-  #     when: _git_status.stdout != ""
-  # when:
-  #   - app_repo_url != ""
-  #   - repo_exists_now.stat.exists
+- name: Reset working tree to origin/{{ app_git_branch }} for existing repo
+  command: git reset --hard "origin/{{ app_git_branch | default('master') }}"
+  args:
+    chdir: "{{ app_clone_path }}"
+  become: true
+  become_user: "{{ owner }}"
+  register: _reset
+  failed_when: _reset.rc != 0
+  changed_when: "'HEAD is now at' in (_reset.stdout | default('')) or 'Updating' in (_reset.stdout | default(''))"
+  when:
+    - app_repo_url != ""
+    - repo_gitdir.stat.exists
