@@ -1,6 +1,43 @@
 ---
-- name: Load distro-specific variables
-  include_vars: "{{ role_path }}/vars/{{ ansible_facts.os_family }}.yml"
+- name: Ensure user SSH directory exists
+  ansible.builtin.file:
+    path: "/home/{{ user_name }}/.ssh"
+    state: directory
+    mode: '0700'
+    owner: "{{ user_name }}"
+    group: "{{ user_name }}"
+  become: true
+
+- name: Copy SSH public key to user authorized_keys
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    dest: "/home/{{ user_name }}/.ssh/authorized_keys"
+    remote_src: yes
+    mode: '0600'
+    owner: "{{ user_name }}"
+    group: "{{ user_name }}"
+  become: true
+
+- name: Ensure facts are gathered
+  ansible.builtin.setup:
+
+- name: Load distro-specific variables (explicit per-family)
+  block:
+    - name: Load Debian variables
+      ansible.builtin.include_vars:
+        file: "{{ role_path }}/vars/Debian.yml"
+      when: ansible_facts.os_family is defined and ansible_facts.os_family | lower == 'debian'
+
+    - name: Load RedHat variables
+      ansible.builtin.include_vars:
+        file: "{{ role_path }}/vars/RedHat.yml"
+      when: ansible_facts.os_family is defined and ansible_facts.os_family | lower == 'redhat'
+
+    - name: Load Suse variables
+      ansible.builtin.include_vars:
+        file: "{{ role_path }}/vars/Suse.yml"
+      when: ansible_facts.os_family is defined and ansible_facts.os_family | lower == 'suse'
+  run_once: true
 
 - name: Assert distro variables loaded
   ansible.builtin.assert:
@@ -16,21 +53,21 @@
     name: "{{ ssh_packages }}"
     state: present
     update_cache: yes
-  when: ansible_facts.os_family == 'Debian'
+  when: ansible_facts.os_family | lower == 'debian'
   become: true
 
 - name: Install SSH server and utilities (RedHat)
   ansible.builtin.dnf:
     name: "{{ ssh_packages }}"
     state: present
-  when: ansible_facts.os_family == 'RedHat'
+  when: ansible_facts.os_family | lower == 'redhat'
   become: true
 
 - name: Install SSH server and utilities (Suse)
   ansible.builtin.zypper:
     name: "{{ ssh_packages }}"
     state: present
-  when: ansible_facts.os_family == 'Suse'
+  when: ansible_facts.os_family | lower == 'suse'
   become: true
 
 - name: Verify ss binary exists
@@ -42,51 +79,15 @@
 - name: Fail if ss binary not found
   ansible.builtin.fail:
     msg: "ss binary not found at {{ ss_binary }}; check role vars for {{ ansible_facts.os_family }}"
-  when: not _ss_stat.stat.exists
+  when: not (_ss_stat.stat is defined and _ss_stat.stat.exists)
   become: true
 
 - name: Validate SSH port is in valid range (1-65535)
   ansible.builtin.assert:
     that:
-      - new_ssh_port | int >= 1
-      - new_ssh_port | int <= 65535
-    fail_msg: "SSH port must be between 1 and 65535, got {{ new_ssh_port }}"
-
-- name: Check if new SSH port is already in use
-  ansible.builtin.command: "{{ ss_binary }} -ltn sport = :{{ new_ssh_port | int }}"
-  register: _port_in_use
-  changed_when: false
-  failed_when: false
-  become: true
-
-- name: Fail if new SSH port is already in use
-  ansible.builtin.fail:
-    msg: "SSH port {{ new_ssh_port }} is already in use by another service"
-  when: _port_in_use.stdout | length > 0
-
-- name: Check for non-root user with authorized_keys (best-effort)
-  ansible.builtin.shell: |
-    for user in $(getent passwd | cut -d: -f1); do
-      [ "$user" = "root" ] && continue
-      homedir=$(getent passwd "$user" | cut -d: -f6)
-      if [ -n "$homedir" ] && [ -f "$homedir/.ssh/authorized_keys" ] && [ -s "$homedir/.ssh/authorized_keys" ]; then
-        echo "$user"
-        exit 0
-      fi
-    done
-    exit 1
-  register: _admin_with_keys
-  changed_when: false
-  failed_when: false
-  become: true
-
-- name: Warn if no non-root user with authorized_keys found
-  ansible.builtin.debug:
-    msg: |
-      WARNING: No non-root user with authorized_keys found.
-      Locking root account may prevent SSH access.
-      Ensure at least one admin user with key-based auth exists before locking root.
-  when: _admin_with_keys.rc != 0 and lock_root | default(true)
+      - (new_ssh_port is defined) and (new_ssh_port | int >= 1)
+      - (new_ssh_port is defined) and (new_ssh_port | int <= 65535)
+    fail_msg: "SSH port must be between 1 and 65535, got {{ new_ssh_port | default('undefined') }}"
 
 - name: Check if sshd_config exists
   ansible.builtin.stat:
@@ -100,13 +101,136 @@
   when: not _sshd_config_stat.stat.exists
   become: true
 
-- name: Backup original sshd_config
+- name: Ensure sshd_config includes sshd_config.d drop-ins
+  ansible.builtin.lineinfile:
+    path: "{{ sshd_config_path }}"
+    regexp: '^\s*Include\s+/etc/ssh/sshd_config\.d'
+    line: 'Include /etc/ssh/sshd_config.d/*.conf'
+    insertafter: '^#?Include'
+    state: present
+    backup: yes
+  become: true
+  register: _include_line
+
+- name: Determine effective sshd configuration (sshd -T)
+  ansible.builtin.command: "{{ sshd_binary }} -T"
+  register: _sshd_T
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Parse effective port from sshd -T (default 22 if not present)
+  ansible.builtin.set_fact:
+    _effective_ssh_port: "{{ (_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')).split() | int }}"
+
+- name: Debug effective SSH port
+  ansible.builtin.debug:
+    msg: "Effective SSH port detected: {{ _effective_ssh_port }}"
+
+- name: Check if new SSH port is already in use (excluding current sshd)
+  ansible.builtin.shell:
+    cmd: |
+      port="{{ new_ssh_port | int }}"
+      output=$("{{ ss_binary }}" -ltnp 2>/dev/null || true)
+      
+      if [ -z "$output" ]; then
+        exit 0
+      fi
+      
+      if ! echo "$output" | grep -E ":${port}\s+" >/dev/null; then
+        exit 0
+      fi
+      
+      if echo "$output" | grep -E ":${port}\s+.*sshd" >/dev/null; then
+        exit 0
+      fi
+      
+      exit 1
+  register: _port_conflict
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Fail if new SSH port is already in use by another service
+  ansible.builtin.fail:
+    msg: "SSH port {{ new_ssh_port }} is already in use by another service"
+  when: _port_conflict.rc != 0
+
+- name: Get {{ user_name }} user information
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ user_name }}"
+  become: true
+  register: _user_getent
+  failed_when: false
+
+- name: Fail if {{ user_name }} user does not exist
+  ansible.builtin.fail:
+    msg: "User '{{ user_name }}' does not exist. SSH access requires this user to be created first."
+  when: _user_getent.ansible_facts.getent_passwd is not defined or user_name not in _user_getent.ansible_facts.getent_passwd
+
+- name: Extract {{ user_name }} home directory
+  ansible.builtin.shell: |
+    getent passwd "{{ user_name }}" | cut -d: -f6
+  register: _user_home_cmd
+  changed_when: false
+  become: true
+
+- name: Set user home fact
+  ansible.builtin.set_fact:
+    _user_home: "{{ _user_home_cmd.stdout }}"
+
+- name: Check {{ user_name }} authorized_keys exists and is not empty
+  ansible.builtin.stat:
+    path: "{{ _user_home }}/.ssh/authorized_keys"
+  register: _user_authorized_keys
+  become: true
+  when: _user_home is defined
+
+- name: Fail if {{ user_name }} has no SSH keys
+  ansible.builtin.fail:
+    msg: |
+      FATAL: Cannot proceed with SSH hardening — user '{{ user_name }}' has no SSH keys.
+      
+      SSH access will only be available via '{{ user_name }}' after root is locked.
+      
+      Options:
+      1. Add SSH public key to {{ _user_home }}/.ssh/authorized_keys
+      2. Re-run this role after keys are added
+      3. Set lock_root: false (not recommended)
+  when: >
+    _user_home is defined and
+    (not _user_authorized_keys.stat.exists or _user_authorized_keys.stat.size == 0)
+
+- name: Debug SSH access user confirmed
+  ansible.builtin.debug:
+    msg: "SSH access verified for user: {{ user_name }} (home: {{ _user_home }})"
+
+- name: Ensure backup directory exists
+  ansible.builtin.file:
+    path: "{{ sshd_backup_dir }}"
+    state: directory
+    mode: '0700'
+  become: true
+
+- name: Create timestamped backup of sshd_config (unique per run)
   ansible.builtin.copy:
     src: "{{ sshd_config_path }}"
-    dest: "{{ sshd_config_path }}.bak.{{ ansible_date_time.iso8601_basic_short }}"
+    dest: "{{ sshd_backup_dir }}/sshd_config.{{ ansible_date_time.iso8601_basic_short }}.bak"
     remote_src: yes
+    backup: no
+    mode: '0600'
+    owner: root
+    group: root
   become: true
   register: _sshd_config_backup
+  failed_when: _sshd_config_backup is failed
+
+- name: Set backup path fact only when backup created
+  ansible.builtin.set_fact:
+    _sshd_config_backup_path: "{{ _sshd_config_backup.dest }}"
+  when: _sshd_config_backup is defined and _sshd_config_backup.dest is defined
+  become: true
 
 - name: Ensure extra SSH config directory exists
   ansible.builtin.file:
@@ -115,7 +239,7 @@
     mode: '0755'
   become: true
 
-- name: Find extra SSH config files
+- name: Find extra SSH config files (provider drop-ins)
   ansible.builtin.find:
     path: "{{ extra_ssh_config_dir }}"
     file_type: file
@@ -126,154 +250,289 @@
   ansible.builtin.file:
     path: "{{ extra_ssh_config_backup_dir }}"
     state: directory
-    mode: '0755'
+    mode: '0700'
   become: true
   when: _extra_config_files.files | length > 0
 
-- name: Backup extra config files
+- name: Backup extra config files (provider drop-ins)
   ansible.builtin.copy:
     src: "{{ item.path }}"
-    dest: "{{ extra_ssh_config_backup_dir }}/{{ item.path | basename }}"
+    dest: "{{ extra_ssh_config_backup_dir }}/{{ item.path | basename }}.{{ ansible_date_time.iso8601_basic_short }}.bak"
     remote_src: yes
+    backup: no
+    mode: '0600'
+    owner: root
+    group: root
   loop: "{{ _extra_config_files.files | default([]) }}"
   when: _extra_config_files.files | length > 0
   become: true
+  register: _extra_config_backups
 
-- name: Remove extra SSH config files
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: absent
-  loop: "{{ _extra_config_files.files | default([]) }}"
+- name: Detect dangerous directives in provider drop-ins (warning only)
+  ansible.builtin.shell: |
+    dangerous_found=0
+    for config_file in "{{ extra_ssh_config_dir }}"/*; do
+      if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "99-hardening.conf" ]; then
+        if grep -Ei '^\s*(PermitRootLogin\s+yes|PermitRootLogin\s+without-password|PermitRootLogin\s+forced-commands-only|PasswordAuthentication\s+yes|PermitEmptyPasswords\s+yes)' "$config_file" >/dev/null; then
+          echo "$(basename "$config_file")"
+          dangerous_found=1
+        fi
+      fi
+    done
+    exit $dangerous_found
+  register: _dangerous_provider_directives
+  changed_when: false
+  failed_when: false
+  become: true
   when: _extra_config_files.files | length > 0
+
+- name: Warn about dangerous provider directives (informational)
+  ansible.builtin.debug:
+    msg: |
+      WARNING: Dangerous SSH directives detected in provider drop-in files:
+      {{ _dangerous_provider_directives.stdout }}
+      
+      These will be overridden by /etc/ssh/sshd_config.d/99-hardening.conf (unless Match blocks apply).
+      
+      Backed up originals in: {{ extra_ssh_config_backup_dir }}
+  when:
+    - _extra_config_files.files | length > 0
+    - _dangerous_provider_directives.rc != 0
+
+- name: Detect Match blocks in provider drop-ins
+  ansible.builtin.shell: |
+    match_found=0
+    for config_file in "{{ extra_ssh_config_dir }}"/*; do
+      if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "99-hardening.conf" ]; then
+        if grep -Ei '^\s*Match' "$config_file" >/dev/null; then
+          echo "$(basename "$config_file")"
+          match_found=1
+        fi
+      fi
+    done
+    exit $match_found
+  register: _match_blocks_found
+  changed_when: false
+  failed_when: false
+  become: true
+  when: _extra_config_files.files | length > 0
+
+- name: Warn about Match blocks in provider drop-ins
+  ansible.builtin.debug:
+    msg: |
+      WARNING: Match blocks detected in provider drop-in files:
+      {{ _match_blocks_found.stdout }}
+      
+      Match blocks have different scope than global directives.
+      The 99-hardening.conf file applies globally and may not override Match-specific settings.
+      
+      Review backed-up files in {{ extra_ssh_config_backup_dir }} for context.
+  when:
+    - _extra_config_files.files | length > 0
+    - _match_blocks_found.rc != 0
+
+- name: Detect cloud-init presence (stat)
+  ansible.builtin.stat:
+    path: /etc/cloud
+  register: _cloud_init_dir
   become: true
 
-- name: Set SSH port in sshd_config
+- name: Check cloud-init active (non-intrusive)
+  ansible.builtin.command: systemctl is-active --quiet cloud-init
+  register: _cloud_init_active
+  failed_when: false
+  changed_when: false
+  become: true
+
+- name: Warn if cloud-init detected
+  ansible.builtin.debug:
+    msg: |
+      WARNING: cloud-init detected ({{ _cloud_init_dir.stat.exists | ternary('dir exists', 'dir missing') }}, service {{ (_cloud_init_active.rc == 0) | ternary('active','inactive') }}).
+      
+      Provider may regenerate SSH drop-in files on reboot or updates.
+      Re-run this role after provider changes to reapply hardening.
+  when: _cloud_init_dir.stat.exists or _cloud_init_active.rc == 0
+
+- name: Create hardening drop-in config (99-hardening.conf)
+  ansible.builtin.copy:
+    content: |
+      # SSH Hardening Configuration
+      # Generated by sshd_hardening role
+      # This file has high lexicographic precedence and overrides provider drop-ins
+      
+      Port {{ new_ssh_port | int }}
+      PermitRootLogin {{ permit_root_login }}
+      PasswordAuthentication {{ password_authentication }}
+      PermitEmptyPasswords {{ permit_empty_password }}
+      X11Forwarding {{ x11_forwarding }}
+      MaxAuthTries {{ max_auth_tries }}
+      MaxSessions {{ max_sessions }}
+      ClientAliveInterval {{ client_alive_interval }}
+      ClientAliveCountMax {{ client_alive_count_max }}
+      Compression {{ compression }}
+      TCPKeepAlive {{ tcp_keep_alive }}
+      LogLevel {{ log_level }}
+    dest: "{{ extra_ssh_config_dir }}/99-hardening.conf"
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+  register: _hardening_conf_created
+
+- name: Check if restorecon is available
+  ansible.builtin.stat:
+    path: /usr/sbin/restorecon
+  register: _restorecon_exists
+  become: true
+
+- name: Restore SELinux context on hardening drop-in (if restorecon available)
+  ansible.builtin.command: restorecon -v "{{ extra_ssh_config_dir }}/99-hardening.conf"
+  become: true
+  register: _restorecon_result
+  changed_when: false
+  failed_when: false
+  when: _hardening_conf_created.changed and _restorecon_exists.stat.exists
+
+- name: Add explanatory comment about duplicated settings in main sshd_config
   ansible.builtin.lineinfile:
     path: "{{ sshd_config_path }}"
-    regexp: "^Port\\s+"
+    regexp: '^# SSH hardening settings'
+    line: "# SSH hardening settings (also in /etc/ssh/sshd_config.d/99-hardening.conf for redundancy)"
+    insertafter: '^#?Include'
+    state: present
+    backup: no
+  become: true
+
+- name: Ensure Port in main sshd_config (idempotent)
+  ansible.builtin.lineinfile:
+    path: "{{ sshd_config_path }}"
+    regexp: '^\s*Port\s+'
     line: "Port {{ new_ssh_port | int }}"
     state: present
-    create: yes
+    backup: yes
   become: true
-  notify: restart ssh
+  register: _main_port_line
 
-- name: Disable root login (sshd_config)
+- name: Ensure PermitRootLogin in main sshd_config (idempotent)
   ansible.builtin.lineinfile:
     path: "{{ sshd_config_path }}"
-    regexp: "^PermitRootLogin\\s+"
+    regexp: '^\s*PermitRootLogin\s+'
     line: "PermitRootLogin {{ permit_root_login }}"
     state: present
+    backup: no
   become: true
-  notify: restart ssh
 
-- name: Disable password authentication
+- name: Ensure PasswordAuthentication in main sshd_config (idempotent)
   ansible.builtin.lineinfile:
     path: "{{ sshd_config_path }}"
-    regexp: "^#?PasswordAuthentication "
+    regexp: '^\s*PasswordAuthentication\s+'
     line: "PasswordAuthentication {{ password_authentication }}"
     state: present
+    backup: no
   become: true
-  notify: restart ssh
 
-- name: Disable empty password login
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?PermitEmptyPasswords "
-    line: "PermitEmptyPasswords {{ permit_empty_password }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Disable X11 forwarding
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?X11Forwarding "
-    line: "X11Forwarding {{ x11_forwarding }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set MaxAuthTries
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?MaxAuthTries "
-    line: "MaxAuthTries {{ max_auth_tries }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set MaxSessions
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?MaxSessions "
-    line: "MaxSessions {{ max_sessions }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set ClientAliveInterval
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?ClientAliveInterval "
-    line: "ClientAliveInterval {{ client_alive_interval }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set ClientAliveCountMax
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?ClientAliveCountMax "
-    line: "ClientAliveCountMax {{ client_alive_count_max }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Disable compression
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?Compression "
-    line: "Compression {{ compression }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set TCPKeepAlive
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?TCPKeepAlive "
-    line: "TCPKeepAlive {{ tcp_keep_alive }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Set LogLevel
-  ansible.builtin.lineinfile:
-    path: "{{ sshd_config_path }}"
-    regexp: "^#?LogLevel "
-    line: "LogLevel {{ log_level }}"
-    state: present
-  become: true
-  notify: restart ssh
-
-- name: Flush handlers to apply all config changes at once
-  ansible.builtin.meta: flush_handlers
-
-- name: Validate sshd_config syntax
+- name: Validate sshd_config syntax before restart
   ansible.builtin.command: "{{ sshd_binary }} -t"
   become: true
   register: _sshd_validate
   changed_when: false
   failed_when: _sshd_validate.rc != 0
 
-- name: Lock root account (if enabled)
-  ansible.builtin.user:
-    name: root
-    password_lock: yes
+- name: Set sshd validation fact
+  ansible.builtin.set_fact:
+    _verification_sshd_validate_ok: true
+  when: _sshd_validate.rc == 0
+
+- name: Restart SSH service if hardening drop-in or main sshd_config changed
+  ansible.builtin.service:
+    name: "{{ ssh_service_name }}"
+    state: restarted
   become: true
-  when: lock_root | default(true)
+  when:
+    - _hardening_conf_created.changed or _main_port_line.changed or _include_line.changed
+
+- name: Wait for SSH to be ready after restart
+  ansible.builtin.pause:
+    seconds: 1
+  when: _hardening_conf_created.changed or _main_port_line.changed or _include_line.changed
 
 - block:
+    - name: Verify SSH is listening on new port (wait_for)
+      ansible.builtin.wait_for:
+        port: "{{ new_ssh_port | int }}"
+        host: 127.0.0.1
+        state: started
+        timeout: 10
+        delay: 1
+      become: true
+      register: _port_listening_verify
+
+    - name: Set port listening fact
+      ansible.builtin.set_fact:
+        _verification_port_listening_ok: true
+      when: _port_listening_verify is succeeded
+
+    - name: Verify SSH port via sshd -T (non-network check)
+      ansible.builtin.shell: |
+        {{ sshd_binary }} -T | grep -E "^port\s+{{ new_ssh_port | int }}$" >/dev/null && echo "OK" || exit 1
+      register: _sshd_t_verify
+      changed_when: false
+      failed_when: _sshd_t_verify.rc != 0
+      become: true
+
+    - name: Set sshd -T verification fact
+      ansible.builtin.set_fact:
+        _verification_sshd_t_ok: true
+      when: _sshd_t_verify.rc == 0
+
+    - name: Find SSH host key files in /etc/ssh
+      ansible.builtin.find:
+        paths: /etc/ssh
+        patterns: 'ssh_host_*_key'
+        file_type: file
+      register: ssh_host_keys
+      become: true
+      changed_when: false
+
+    - name: Warn if no SSH host keys found
+      ansible.builtin.debug:
+        msg: "WARNING: No SSH host keys found in /etc/ssh/; sshd may not be fully initialized"
+      when: ssh_host_keys.matched == 0
+
+    - name: Fail if no SSH host keys found
+      ansible.builtin.fail:
+        msg: "SSH host keys not found; cannot proceed with connectivity test"
+      when: ssh_host_keys.matched == 0
+
+    - name: Test SSH connectivity (runtime verification)
+      ansible.builtin.shell: |
+        sshd -T | grep -E "^permitrootlogin\s+no$" && \
+        sshd -T | grep -E "^passwordauthentication\s+no$" && \
+        sshd -T | grep -E "^port\s+{{ new_ssh_port | int }}$"
+      register: _ssh_connect_test
+      changed_when: false
+      failed_when: _ssh_connect_test.rc != 0
+      become: true
+      retries: 3
+      delay: 2
+      until: _ssh_connect_test.rc == 0
+
+    - name: Set SSH connectivity fact
+      ansible.builtin.set_fact:
+        _verification_ssh_connect_ok: true
+      when: _ssh_connect_test.rc == 0
+
+    - name: Lock root account password (if enabled and after verification)
+      ansible.builtin.user:
+        name: root
+        password_lock: yes
+      become: true
+      when: lock_root | bool
+
+    - name: Set root lock fact
+      ansible.builtin.set_fact:
+        _verification_root_locked: "{{ lock_root | bool }}"
+
     - name: Create SSH hardening log directory
       ansible.builtin.file:
         path: "{{ ssh_hardening_log | dirname }}"
@@ -281,45 +540,75 @@
         mode: '0755'
       become: true
 
-    - name: Verify SSH is listening on new port
-      ansible.builtin.command: "{{ ss_binary }} -ltn sport = :{{ new_ssh_port | int }}"
-      register: _ssh_listen_verify
-      changed_when: false
-      failed_when: _ssh_listen_verify.rc != 0
-      become: true
-      retries: 3
-      delay: 2
-      until: _ssh_listen_verify.rc == 0
-
-    - name: Log successful SSH hardening summary
-      ansible.builtin.copy:
-        content: |
-          SSH Hardening Summary
-          =====================
-          Timestamp: {{ ansible_date_time.iso8601 }}
-          Port: {{ new_ssh_port }}
-          Root locked: {{ lock_root | default(true) }}
-          Config backup: {{ _sshd_config_backup.dest | default('unknown') }}
-          Extra config backup dir: {{ extra_ssh_config_backup_dir }}
-          Verification: PASSED
-        dest: "{{ ssh_hardening_log }}"
-        mode: '0600'
+    - name: Log successful SSH hardening summary (append to log)
+      ansible.builtin.shell: |
+        {
+          echo "==================== SSH Hardening Summary ===================="
+          echo "Timestamp: {{ ansible_date_time.iso8601 }}"
+          echo "Port: {{ new_ssh_port }}"
+          echo "Root password locked: {{ _verification_root_locked }}"
+          echo "SSH access user: {{ user_name }}"
+          echo ""
+          echo "Configuration:"
+          echo "  - Main config backup: {{ _sshd_config_backup_path | default('N/A') }}"
+          echo "  - Hardening drop-in: {{ extra_ssh_config_dir }}/99-hardening.conf"
+          echo "  - Provider drop-in backup dir: {{ extra_ssh_config_backup_dir | default('N/A') }}"
+          echo ""
+          echo "Verification Results:"
+          echo "  - sshd -t syntax check: {{ _verification_sshd_validate_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - Port listening (wait_for): {{ _verification_port_listening_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - sshd -T port config: {{ _verification_sshd_t_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - SSH connectivity: {{ _verification_ssh_connect_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - SSH host keys: FOUND ({{ ssh_host_keys.matched }} key(s))"
+          echo ""
+          echo "Notes:"
+          echo "  - SSH access available ONLY via user: {{ user_name }}"
+          echo "  - Root login disabled (PermitRootLogin no)"
+          echo "  - Root password locked (password_lock yes)"
+          echo "  - Provider drop-in files are preserved and backed up (not modified)."
+          echo "  - 99-hardening.conf overrides provider settings via lexicographic precedence."
+          echo "  - If provider tooling regenerates drop-ins, re-run this role to reapply."
+          echo "============================================================="
+        } >> "{{ ssh_hardening_log }}"
       become: true
 
   rescue:
-    - name: SSH failed to listen on new port — restoring backup
+    - name: Restore sshd_config from backup (if available)
       ansible.builtin.copy:
-        src: "{{ _sshd_config_backup.dest }}"
+        src: "{{ _sshd_config_backup_path }}"
         dest: "{{ sshd_config_path }}"
         remote_src: yes
+        mode: '0600'
+        owner: root
+        group: root
       become: true
+      register: _restore_result
+      when: _sshd_config_backup_path is defined
 
-    - name: Restore extra SSH config files from backup (if present)
-      ansible.builtin.shell: |
-        if [ -d "{{ extra_ssh_config_backup_dir }}" ] && [ "$(ls -A {{ extra_ssh_config_backup_dir }} 2>/dev/null || true)" ]; then
-          mkdir -p "{{ extra_ssh_config_dir }}"
-          cp -r "{{ extra_ssh_config_backup_dir }}/." "{{ extra_ssh_config_dir }}/" 2>/dev/null || true
-        fi
+    - name: Fail if backup path unknown
+      ansible.builtin.fail:
+        msg: "SSH config backup failed; cannot restore. Check system manually."
+      when: _sshd_config_backup_path is not defined
+
+    - name: Fail if restore failed
+      ansible.builtin.fail:
+        msg: "Failed to restore sshd_config from {{ _sshd_config_backup_path }}"
+      when:
+        - _restore_result is defined
+        - _restore_result.rc is defined
+        - _restore_result.rc != 0
+
+    - name: Restore SELinux context on restored sshd_config
+      ansible.builtin.command: restorecon -v "{{ sshd_config_path }}"
+      become: true
+      changed_when: false
+      failed_when: false
+      when: _restorecon_exists.stat.exists
+
+    - name: Remove failed hardening drop-in
+      ansible.builtin.file:
+        path: "{{ extra_ssh_config_dir }}/99-hardening.conf"
+        state: absent
       become: true
 
     - name: Validate restored sshd_config
@@ -332,34 +621,63 @@
         state: restarted
       become: true
 
-    - name: Log failed SSH hardening summary
-      ansible.builtin.copy:
-        content: |
-          SSH Hardening FAILED
-          ====================
-          Timestamp: {{ ansible_date_time.iso8601 }}
-          Attempted Port: {{ new_ssh_port }}
-          Root locked attempted: {{ lock_root | default(true) }}
-          Config backup restored from: {{ _sshd_config_backup.dest | default('unknown') }}
-          Check SSH logs for details.
-        dest: "{{ ssh_hardening_log }}"
-        mode: '0600'
+    - name: Log failed SSH hardening summary (append to log)
+      ansible.builtin.shell: |
+        {
+          echo "==================== SSH Hardening FAILED ===================="
+          echo "Timestamp: {{ ansible_date_time.iso8601 }}"
+          echo "Attempted Port: {{ new_ssh_port }}"
+          echo "Root password lock attempted: {{ lock_root | bool }}"
+          echo "SSH access user: {{ user_name }}"
+          echo ""
+          echo "Failure reason: Verification failed (port listening, SSH connectivity, or host keys)."
+          echo ""
+          echo "Verification Status:"
+          echo "  - sshd -t syntax check: {{ _verification_sshd_validate_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - Port listening (wait_for): {{ _verification_port_listening_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - sshd -T port config: {{ _verification_sshd_t_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo "  - SSH connectivity: {{ _verification_ssh_connect_ok | default(false) | ternary('PASSED', 'FAILED') }}"
+          echo ""
+          echo "Actions taken:"
+          echo "  - Main sshd_config restored from: {{ _sshd_config_backup_path | default('N/A') }}"
+          echo "  - SELinux context restored (if applicable)"
+          echo "  - Hardening drop-in removed: {{ extra_ssh_config_dir }}/99-hardening.conf"
+          echo "  - SSH service restarted with previous configuration"
+          echo ""
+          echo "Check SSH logs for details:"
+          echo "  - Debian: /var/log/auth.log"
+          echo "  - RedHat: /var/log/secure"
+          echo ""
+          echo "Manual verification:"
+          echo "  - {{ sshd_binary }} -t"
+          echo "  - {{ ss_binary }} -ltnp | grep :{{ new_ssh_port }}"
+          echo "  - ssh -p {{ new_ssh_port }} {{ user_name }}@localhost"
+          echo "============================================================="
+        } >> "{{ ssh_hardening_log }}"
       become: true
 
     - name: Fail with detailed error message
       ansible.builtin.fail:
         msg: |
-          SSH hardening failed: sshd is not listening on port {{ new_ssh_port }}.
+          SSH hardening failed during verification phase.
           
           Attempted changes:
           - Port: {{ new_ssh_port }}
           - PermitRootLogin: {{ permit_root_login }}
           - PasswordAuthentication: {{ password_authentication }}
+          - SSH access user: {{ user_name }}
           
-          Backup restored from: {{ _sshd_config_backup.dest | default('unknown') }}
+          Verification Status:
+          - sshd -t: {{ _verification_sshd_validate_ok | default(false) | ternary('PASSED', 'FAILED') }}
+          - Port listening: {{ _verification_port_listening_ok | default(false) | ternary('PASSED', 'FAILED') }}
+          - sshd -T: {{ _verification_sshd_t_ok | default(false) | ternary('PASSED', 'FAILED') }}
+          - SSH connectivity: {{ _verification_ssh_connect_ok | default(false) | ternary('PASSED', 'FAILED') }}
+          
+          Backup restored from: {{ _sshd_config_backup_path | default('N/A') }}
           SSH service restarted with previous configuration.
           
           Verify manually:
           - Check /var/log/auth.log (Debian) or /var/log/secure (RedHat) for errors
           - Run: {{ sshd_binary }} -t
           - Run: {{ ss_binary }} -ltnp | grep :{{ new_ssh_port }}
+          - Run: ssh -p {{ new_ssh_port }} {{ user_name }}@localhost

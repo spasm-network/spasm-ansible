@@ -20,9 +20,7 @@
 
     - role: firewall_preopen
 
-    # - role: sshd_hardening
-
-    # - role: firewall
+    - role: sshd_hardening
 
     - role: nginx_proxy
 
@@ -36,6 +34,8 @@
     - role: app_deployment
 
     - role: firewall_enable
+
+    # - role: fail2ban
 
     # - name: Print HOME (env)
     #   ansible.builtin.debug:

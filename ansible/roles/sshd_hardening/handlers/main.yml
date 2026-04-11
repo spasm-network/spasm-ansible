@@ -1,6 +1,4 @@
+# handlers/main.yml
 ---
-- name: restart ssh
-  ansible.builtin.service:
-    name: "{{ ssh_service_name }}"
-    state: restarted
-  become: true
+# Handlers removed - no longer using notify pattern
+# All restart logic is now explicit and conditional in tasks/main.yml
