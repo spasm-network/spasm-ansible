@@ -5,3 +5,6 @@ new_ssh_port: "{{ (lookup('env','NEW_SSH_PORT') or '22') | int }}"
 set_debian_env: true
 # If true, allow an iptables fallback branch (disabled by default)
 enable_iptables_fallback: false
+# Default firewall package and service name (can be overridden by distro vars)
+firewall_pkg: firewalld
+firewall_service_name: firewalld

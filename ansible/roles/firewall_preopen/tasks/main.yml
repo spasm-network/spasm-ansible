@@ -1,16 +1,15 @@
-# roles/firewall_preopen/tasks/main.yml
 ---
 - name: Ensure facts are gathered
   ansible.builtin.setup:
-  when: ansible_facts is not defined or ansible_facts['os_family'] is not defined
+  when: ansible_facts['os_family'] is not defined
 
 - name: Load distro-specific variables
-  include_vars: "{{ role_path }}/vars/{{ ansible_facts.os_family }}.yml"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/vars/{{ ansible_facts.os_family }}.yml"
 
 - name: Assert distro variables loaded
   ansible.builtin.assert:
     that:
-      - firewall_backend is defined
       - firewall_pkg is defined
       - firewall_service_name is defined
     fail_msg: "Unsupported OS family or missing role vars for {{ ansible_facts.os_family }}"
@@ -76,18 +75,14 @@
   when: ansible_facts.os_family == 'Suse'
   become: true
 
-# UFW: ufw module is idempotent and works even when UFW is inactive.
-# No query needed; rule is added safely.
-- name: Pre-open SSH port (UFW)
-  ansible.builtin.ufw:
-    rule: allow
-    port: "{{ new_ssh_port | int }}"
-    proto: tcp
-    comment: "pre-open SSH port"
-  when: firewall_backend == 'ufw'
+- name: Ensure firewalld is started (temporary, do NOT enable at boot)
+  ansible.builtin.service:
+    name: "{{ firewall_service_name }}"
+    state: started
+  when: firewall_pkg == 'firewalld'
   become: true
 
-# firewalld: query first to check if port rule already exists
+# firewalld: query first to check if port rule already exists (permanent)
 - name: Check if SSH port {{ new_ssh_port }} is already allowed in firewalld (permanent)
   ansible.builtin.command: >
     firewall-cmd --permanent --query-port={{ new_ssh_port | int }}/tcp
@@ -95,19 +90,17 @@
   changed_when: false
   failed_when: _firewall_query_port.rc not in [0, 1]
   timeout: 30
-  when: firewall_backend == 'firewalld'
   become: true
 
 # Add port only if query returned non-zero (port not present)
 - name: Pre-open SSH port (firewalld permanent) if not already present
   ansible.builtin.command: >
     firewall-cmd --permanent --add-port={{ new_ssh_port | int }}/tcp
-  when:
-    - firewall_backend == 'firewalld'
-    - _firewall_query_port.rc != 0
+  when: _firewall_query_port.rc != 0
   register: _firewall_add_port
   changed_when: _firewall_add_port.rc == 0
-  failed_when: _firewall_add_port.rc != 0
+  # do not fail here; let the explicit fail task emit richer output
+  failed_when: false
   timeout: 30
   become: true
 
@@ -125,28 +118,33 @@
       - firewalld service not running
       - Insufficient permissions (ensure become: true)
   when:
-    - firewall_backend == 'firewalld'
     - _firewall_add_port is defined
-    - _firewall_add_port.rc != 0
+    - (_firewall_add_port.rc is defined and _firewall_add_port.rc != 0)
 
-# Reload firewalld only if we actually added a port
+# Reload firewalld to apply permanent changes
 - name: Reload firewalld to apply permanent changes
   ansible.builtin.command: firewall-cmd --reload
-  when:
-    - firewall_backend == 'firewalld'
-    - _firewall_add_port is changed
+  when: _firewall_add_port is changed
   timeout: 30
   become: true
 
-# iptables legacy fallback (disabled by default)
-- name: Pre-open SSH port (iptables legacy) if enabled
-  ansible.builtin.command: >
-    /sbin/iptables -C INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT || /sbin/iptables -I INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT
-  when:
-    - firewall_backend == 'iptables'
-    - enable_iptables_fallback | default(false)
-  become: true
-  register: _iptables_result
-  changed_when: _iptables_result.rc == 0
-  failed_when: _iptables_result.rc not in [0, 1]
+# iptables legacy fallback (disabled by default) - split check/add for accurate change reporting
+- name: Check iptables rule exists for SSH port
+  ansible.builtin.command: /sbin/iptables -C INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT
+  register: _iptables_check
+  changed_when: false
+  failed_when: _iptables_check.rc not in [0,1]
   timeout: 30
+  become: true
+  when: enable_iptables_fallback | default(false)
+
+- name: Add iptables rule for SSH port if missing
+  ansible.builtin.command: /sbin/iptables -I INPUT -p tcp --dport {{ new_ssh_port | int }} -j ACCEPT
+  when:
+    - enable_iptables_fallback | default(false)
+    - _iptables_check.rc != 0
+  register: _iptables_add
+  changed_when: _iptables_add.rc == 0
+  failed_when: _iptables_add.rc != 0
+  timeout: 30
+  become: true

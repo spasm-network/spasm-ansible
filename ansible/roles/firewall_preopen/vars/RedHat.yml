@@ -1,5 +1,4 @@
 ---
 # RHEL/CentOS/Fedora specifics
-firewall_backend: firewalld
 firewall_pkg: firewalld
 firewall_service_name: firewalld

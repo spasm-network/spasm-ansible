@@ -1,5 +1,4 @@
 ---
 # SUSE specifics (modern SUSE uses firewalld on newer versions)
-firewall_backend: firewalld
 firewall_pkg: firewalld
 firewall_service_name: firewalld
