@@ -35,6 +35,8 @@
 
     - role: app_deployment
 
+    - role: firewall_enable
+
     # - name: Print HOME (env)
     #   ansible.builtin.debug:
     #     var: lookup('env','HOME')

@@ -1,0 +1,178 @@
+---
+- name: Ensure facts are gathered
+  ansible.builtin.setup:
+  when: ansible_facts['os_family'] is not defined
+
+- name: Load distro-specific variables
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/vars/{{ ansible_facts.os_family }}.yml"
+
+- name: Assert distro variables loaded
+  ansible.builtin.assert:
+    that:
+      - firewall_pkg is defined
+      - firewall_service_name is defined
+    fail_msg: "Unsupported OS family or missing role vars for {{ ansible_facts.os_family }}"
+
+- name: Assert new_ssh_port is defined and is an integer
+  ansible.builtin.assert:
+    that:
+      - new_ssh_port is defined
+      - new_ssh_port | int is defined
+    fail_msg: "new_ssh_port must be defined and be an integer (e.g., 2222)"
+
+# --- Verify SSH port exists in permanent config (port OR ssh service in zone) ---
+
+- name: Query permanent for port {{ new_ssh_port }} in public zone
+  ansible.builtin.command: >
+    firewall-cmd --permanent --zone=public --query-port={{ new_ssh_port | int }}/tcp
+  register: _ssh_port_query
+  changed_when: false
+  failed_when: _ssh_port_query.rc not in [0,1]
+  become: true
+  timeout: 30
+
+- name: Query permanent for 'ssh' service in public zone
+  ansible.builtin.command: firewall-cmd --permanent --zone=public --query-service=ssh
+  register: _ssh_service_query
+  changed_when: false
+  failed_when: _ssh_service_query.rc not in [0,1]
+  become: true
+  timeout: 30
+
+- name: Fail if new SSH port {{ new_ssh_port }} is not present
+  ansible.builtin.fail:
+    msg: >
+      SSH port {{ new_ssh_port }} is not present in firewalld permanent configuration
+      (neither as an explicit port nor via the 'ssh' service in the public zone).
+      Ensure firewall_preopen ran successfully.
+  when: not ((_ssh_port_query.rc == 0) or (_ssh_service_query.rc == 0))
+
+# --- Ensure required ports are enabled permanently ---
+
+- name: Ensure new SSH port is open permanently
+  ansible.builtin.firewalld:
+    port: "{{ new_ssh_port | int }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+  become: true
+  register: _ssh_port_set
+
+- name: Ensure HTTP and HTTPS are open permanently
+  ansible.builtin.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    zone: public
+  loop:
+    - 80
+    - 443
+  become: true
+  register: _http_ports_set
+
+# --- Clean up stale permanent TCP ports ---
+
+- name: List permanent ports in public zone
+  ansible.builtin.command: firewall-cmd --permanent --zone=public --list-ports
+  register: _permanent_ports
+  changed_when: false
+  failed_when: _permanent_ports.rc != 0
+  become: true
+  timeout: 30
+
+- name: Parse permanent ports into list (integers)
+  ansible.builtin.set_fact:
+    _permanent_ports_list: >-
+      {{
+        (_permanent_ports.stdout.split() | default([]))
+        | map('regex_replace','/tcp$','')
+        | map('trim')
+        | reject('equalto','')
+        | map('int')
+        | list
+      }}
+
+- name: Compute ports to remove (keep new_ssh_port, 80, 443)
+  ansible.builtin.set_fact:
+    _ports_to_remove: >-
+      {{
+        _permanent_ports_list
+        | difference([ new_ssh_port | int, 80, 443 ])
+        | list
+      }}
+
+- name: Remove unwanted permanent ports
+  ansible.builtin.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: disabled
+    zone: public
+  loop: "{{ _ports_to_remove }}"
+  when: _ports_to_remove | length > 0
+  register: _port_removals
+  become: true
+
+# --- Remove 'ssh' service if using non-standard SSH port ---
+
+- name: Verify new_ssh_port is open before removing ssh service
+  ansible.builtin.command: >
+    firewall-cmd --permanent --zone=public --query-port={{ new_ssh_port | int }}/tcp
+  register: _new_port_open
+  changed_when: false
+  failed_when: _new_port_open.rc not in [0,1]
+  when:
+    - new_ssh_port is defined
+    - new_ssh_port | int != 22
+  become: true
+  timeout: 30
+
+- name: Fail if new_ssh_port not open before removing ssh service
+  ansible.builtin.fail:
+    msg: >
+      Cannot remove 'ssh' service: new_ssh_port {{ new_ssh_port }} is not open in permanent config.
+      This would lock you out. Aborting.
+  when:
+    - new_ssh_port is defined
+    - new_ssh_port | int != 22
+    - _new_port_open.rc != 0
+
+- name: Remove 'ssh' service if new_ssh_port is not 22
+  ansible.builtin.firewalld:
+    service: ssh
+    permanent: true
+    state: disabled
+    zone: public
+  when:
+    - new_ssh_port is defined
+    - new_ssh_port | int != 22
+    - _new_port_open.rc == 0
+  become: true
+  register: _ssh_service_removed
+
+# --- Reload firewalld to apply all permanent changes ---
+
+- name: Reload firewalld to apply permanent changes
+  ansible.builtin.command: firewall-cmd --reload
+  when: >-
+    (
+      (_ssh_port_set is defined and _ssh_port_set.changed)
+      or
+      (_http_ports_set is defined and (_http_ports_set.results | selectattr('changed') | list | length) > 0)
+      or
+      (_port_removals is defined and (_port_removals.results | selectattr('changed') | list | length) > 0)
+      or
+      (_ssh_service_removed is defined and _ssh_service_removed.changed)
+    )
+  become: true
+  timeout: 30
+
+# --- Start and enable firewalld service at boot ---
+
+- name: Start and enable firewalld service at boot
+  ansible.builtin.service:
+    name: "{{ firewall_service_name }}"
+    state: started
+    enabled: true
+  when: firewall_pkg == 'firewalld'
+  become: true
