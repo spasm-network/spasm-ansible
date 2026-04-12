@@ -1,0 +1,12 @@
+[DEFAULT]
+bantime = 600
+findtime = 600
+maxretry = 10
+backend = {{ backend }}
+
+[sshd]
+enabled = true
+port = {{ new_ssh_port_int }}
+filter = sshd
+logpath = {{ logpath }}
+maxretry = 10

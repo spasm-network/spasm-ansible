@@ -1,0 +1,3 @@
+---
+# Role defaults
+new_ssh_port: "{{ (lookup('env','NEW_SSH_PORT') or '22') | int }}"

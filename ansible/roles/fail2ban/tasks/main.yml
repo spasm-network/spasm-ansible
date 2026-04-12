@@ -1,0 +1,104 @@
+---
+- name: Validate new_ssh_port
+  ansible.builtin.assert:
+    that:
+      - new_ssh_port | int >= 1
+      - new_ssh_port | int <= 65535
+    fail_msg: "new_ssh_port must be an integer between 1 and 65535."
+
+- name: Determine fail2ban log path per distro (full path)
+  ansible.builtin.set_fact:
+    fail2ban_logpath: >-
+      {% if ansible_facts.os_family | lower == 'redhat' %}
+        /var/log/secure
+      {% else %}
+        /var/log/auth.log
+      {% endif %}
+
+- name: Detect init system for backend selection
+  ansible.builtin.set_fact:
+    fail2ban_backend: systemd
+
+- name: Install fail2ban (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: fail2ban
+    state: present
+    update_cache: yes
+  when: ansible_facts.os_family | lower == 'debian'
+
+- name: Install fail2ban (RedHat/CentOS/Fedora)
+  ansible.builtin.dnf:
+    name: fail2ban
+    state: present
+  when: ansible_facts.os_family | lower == 'redhat'
+
+- name: Install fail2ban (SUSE)
+  ansible.builtin.zypper:
+    name: fail2ban
+    state: present
+  when: ansible_facts.os_family | lower == 'suse'
+
+- name: Ensure fail2ban config dir exists
+  ansible.builtin.file:
+    path: /etc/fail2ban
+    state: directory
+    mode: '0755'
+
+- name: Ensure jail.d directory exists for drop-ins
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    mode: '0755'
+
+- name: Create fail2ban sshd drop-in (safe, idempotent)
+  ansible.builtin.template:
+    src: templates/10-sshd.local.j2
+    dest: /etc/fail2ban/jail.d/10-sshd.local
+    mode: '0644'
+  notify: Restart fail2ban
+  vars:
+    new_ssh_port_int: "{{ new_ssh_port | int }}"
+    logpath: "{{ fail2ban_logpath }}"
+    backend: "{{ fail2ban_backend }}"
+
+- name: Ensure fail2ban service is enabled and started
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: yes
+  register: _service_result
+
+- name: Verify fail2ban status (non-failing)
+  ansible.builtin.command: fail2ban-client status
+  register: _fail2ban_status
+  changed_when: false
+  failed_when: false
+
+- name: Debug fail2ban status (when available)
+  ansible.builtin.debug:
+    msg: "{{ _fail2ban_status.stdout }}"
+  when: _fail2ban_status.rc == 0
+
+- name: Create/append secure setup log
+  ansible.builtin.shell: |
+    {
+      echo "==================== fail2ban Setup ===================="
+      echo "Timestamp: $(date -Iseconds)"
+      echo "SSH Port: {{ new_ssh_port }}"
+      echo "Bantime: 3600s"
+      echo "Max retries: 3"
+      echo "Logpath: {{ fail2ban_logpath }}"
+      echo "Status: $(fail2ban-client status sshd 2>/dev/null | grep 'Status' || echo 'UNKNOWN')"
+      echo "====================================================="
+    } >> /var/log/fail2ban-setup.log
+  changed_when: false
+  failed_when: false
+  register: _log_write
+
+- name: Set secure permissions on fail2ban setup log if it exists
+  ansible.builtin.file:
+    path: /var/log/fail2ban-setup.log
+    owner: root
+    group: root
+    mode: '0640'
+  when: _log_write is defined
