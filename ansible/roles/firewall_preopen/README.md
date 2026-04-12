@@ -1,30 +1,30 @@
 ## firewall_preopen Role
 
 ### Purpose
-Pre-open the SSH port in the firewall before SSH hardening is applied. This prevents lockout during the hardening process.
+Pre-open firewall ports needed for provisioning before SSH hardening and final firewall lockdown. Prevents SSH lockout during setup.
 
 ### Key Behaviors
-- Installs firewalld
-- Adds SSH port rule (permanent).
-- Does NOT start or enable the firewall service — that is deferred to `firewall_enable` role, which runs after SSH hardening completes.
-- Idempotent: safe to re-run; existing rules are not duplicated.
+- Installs and starts firewalld (does NOT enable at boot — deferred to `firewall_enable` role)
+- Opens HTTP (80) needed for obtaining ssl cert, HTTPS (443),
+- Opens SSH ports (default 22 or custom via `new_ssh_port`)
+- Uses `ansible.posix.firewalld` module for idempotency — safe to re-run, no duplicate rules
+- On Debian: optionally sets `DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=a` to avoid interactive prompts
+- Validates `new_ssh_port` is numeric and in range (1-65535); defaults to 22 if undefined/empty/0
 
 ### Variables
-- `new_ssh_port`: SSH port to pre-open (default: 22)
+- `new_ssh_port`: SSH port to pre-open (default: 22, or from `NEW_SSH_PORT` env var)
 - `set_debian_env`: If true, sets DEBIAN_FRONTEND and NEEDRESTART_MODE on Debian family (default: true)
-- `enable_iptables_fallback`: If true, enables iptables fallback branch (default: false)
 
 ### Supported Distros
-- Debian/Ubuntu (uses firewalld)
-- RHEL/CentOS/Fedora (uses firewalld)
-- SUSE (uses firewalld)
+- Debian/Ubuntu
+- RHEL/CentOS/Fedora
+- SUSE/openSUSE
 
 ### Playbook Order
 This role must run **before** `sshd_hardening` and **before** `firewall_enable`:
 
 ```yaml
-- role: firewall_preopen
-- role: sshd_hardening
-- role: firewall_enable
-- role: fail2ban
-```
+- role: firewall_preopen      # Opens 80, 443, SSH port
+- role: sshd_hardening        # Hardens SSH (safe, port already open)
+- role: firewall_enable       # Enables firewalld, locks down to final state
+- role: fail2ban              # Monitoring
