@@ -14,7 +14,8 @@ mode, also copied to 'root' for Ansible access. Thus, manager can use scripts fr
 user/admin to manage a server.
 
 Includes roles:
-- user/admin setup,
+- user_and_groups — ensures a managed non-privileged user and a sudo-enabled admin account are present, creates an admin group with a sudoers drop-in, and enforces SSH-key-only access for regular users; idempotent and safe for repeated runs.
+- copy_files — copies SSH keys into user and the ansible repo into admin accounts, creating ~/.ssh and preserving ownership and permissions; optional and idempotent.
 - system_updates — distro-specific package upgrades + unattended-updates (deb/dnf/zypper), creates /var/run/reboot-required; reboots deferred to admin scripts.
 - auto-updates,
 - SSH hardening role — backups original configs, idempotently applies secure settings (port, root/password auth, etc.), validates with `sshd -t`, verifies SSH listens on new port with retries, auto-rolls back on failure, locks root by default (opt-out), pre-checks that {{ user_name }} has SSH keys, logs to /var/log/ssh_hardening.log, runs after firewall_preopen and before firewall_enable, supports Debian/RHEL/SUSE.
@@ -23,8 +24,7 @@ Includes roles:
 - ssl_certificate — automates Let's Encrypt provisioning via certbot. Obtains certs on first run, then runs `certbot install` every run (idempotent, no re-issue). Primary renewal via cron/systemd; safeguard cron at 4 AM auto-renews if expiring within 7 days. Backs up nginx config before edits; restores on failure. Logs all activity; alerts root if renewal fails. Safe to re-run; fixes config drift.
 - container_runtime — installs and validates container runtimes (default: podman) using distro-native packages (apt/dnf/zypper). It detects and enables the correct systemd unit (fails fast if unit files are missing), deploys a minimal /etc/containers/registries.conf for Podman when absent, performs a smoke test, and writes a simple install log. Docker's official repo is intentionally not added by this role; use a separate opt-in step if you need docker-ce.
 - app_deployment — clones or updates app repo (hard-resets local changes), writes missing .env keys only (does not overwrite existing values), detects podman/docker, validates and runs compose, and performs a port smoke test; writes run_summary JSON to logs_dir on control machine.
-- fail2ban — installs and configures fail2ban with a per-distro drop-in SSH jail, auto-selects backend and logpath, validates SSH port, restarts service via handler on change, and writes a restricted setup audit log. Compatible with Debian/RHEL/SUSE.
-- management scripts.
+- fail2ban — installs and configures fail2ban using a per-distro drop-in SSH jail, auto-selects backend and logpath, validates the SSH port, restarts the service via a handler when config changes, and writes a restricted-permission setup audit log; compatible with Debian, RHEL/CentOS/Fedora, and SUSE.
 
 FOLDER STRUCTURE:
 .
@@ -39,7 +39,7 @@ FOLDER STRUCTURE:
 ├── roles/
 │   ├── logging/               # Log variables
 │   ├── user_and_groups/       # Create 'user' and 'admin' with sudo
-│   ├── copy_files/            # Copy ansible and ssh folders to 'admin' and 'user'
+│   ├── copy_files/            # Copy ansible and ssh folders to 'admin'
 │   ├── system_updates/        # apt/dnf/zypper upgrades + auto-updates
 │   ├── nginx_proxy/           # Reverse proxy config
 │   ├── sshd_hardening/        # SSH config
@@ -50,23 +50,15 @@ FOLDER STRUCTURE:
 ├── group_vars/
 │   └── all.yml                # Shared variables
 └── scripts/                   # Management scripts (copied to both 'user' and 'admin')
-    ├── user/                  # Runnable as 'user' (no sudo)
-    │   ├── app/
-    │   │   ├── view-logs
-    │   │   └── view-status
-    │   └── monitoring/
-    │       ├── disk-usage
-    │       └── network-status
-    └── admin/                 # Runnable as 'admin' (su - admin first)
-        ├── server/
-        │   ├── update
-        │   ├── reboot
-        │   └── cert-renew
-        ├── nginx/
-        │   ├── restart
-        │   └── reload-config
-        └── firewall/
-            └── status
+    ├── server/
+    │   ├── update
+    │   ├── reboot
+    │   └── cert-renew
+    ├── nginx/
+    │   ├── restart
+    │   └── reload-config
+    └── firewall/
+        └── status
 
 KEY NOTES:
 
@@ -95,9 +87,7 @@ KEY NOTES:
    - Playbook + roles identical for both modes
 
 6. SCRIPTS FOLDER:
-   - Nested structure: scripts/user/ (no sudo) and scripts/admin/ (requires su - admin)
-   - Self-documenting: manager knows immediately which scripts need elevation
-   - Manager can update ansible git repo to get new scripts (from user and admin)
+   - Manager can update ansible git repo to get new scripts (from admin or root)
 
 7. USAGE:
    Local:  git clone repo-url && cd repo-name && bash init.sh
@@ -122,29 +112,28 @@ FINAL SERVER STRUCTURE AFTER SETUP:
 root (initial setup only, minimal access after)
 ├── .ssh/
 │   └── authorized_keys (Ansible SSH key for remote mode)
-└── ansible/
+└── spasm-ansible/
+    ├── ansible/
     ├── scripts/
     ├── .env
-    └── site.yml
+    └── init.sh
 
 user (runs docker/podman app, no sudo)
 ├── .ssh/
 │   └── authorized_keys (manager SSH key)
-├── docker/ (from docker git repo)
-│   ├── backups/
-│   ├── scripts/
-│   ├── .env
-│   └── docker-compose.yml
-└── ansible/
-    ├── scripts/user/
+└── spasm-docker/ (from spasm-docker git repo)
+    ├── backups/
+    ├── scripts/
     ├── .env
-    └── site.yml
+    ├── .env.example
+    └── docker-compose.yml
 
 admin (infrastructure management, sudo access, no ssh)
-└── ansible/
-    ├── scripts/admin/
+└── spasm-ansible/
+    ├── ansible/
+    ├── scripts/
     ├── .env
-    └── site.yml
+    └── init.sh
 
 Other notes:
 - root: used only for initial install then disabled; manager SSHs as 'user' (no password) and uses su - admin + password for sudo.

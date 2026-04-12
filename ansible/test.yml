@@ -28,14 +28,14 @@
 
     - role: container_runtime
       vars:
-        runtime: podman          # or docker
+        runtime: podman
         runtime_version: null    # or a distro-appropriate version string
 
     - role: app_deployment
 
     - role: firewall_enable
 
-    # - role: fail2ban
+    - role: fail2ban
 
     # - name: Print HOME (env)
     #   ansible.builtin.debug:
