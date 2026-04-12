@@ -67,7 +67,6 @@ NEW_SSH_PORT="${NEW_SSH_PORT:-}"
 # if [ -z "$NEW_SSH_PORT" ]; then unset NEW_SSH_PORT; fi
 
 PLAYBOOK_PATH="${THIS_SCRIPT_DIR}/ansible/playbook.yml"
-TEST_PATH="${THIS_SCRIPT_DIR}/ansible/test.yml"
 # ENV_FILE="/.env"
 MAX_RETRIES=5
 RETRY_SLEEP=5
@@ -547,10 +546,6 @@ install_ansible() {
 }
 
 run_playbook() {
-  ansible-playbook ${PLAYBOOK_PATH}
-}
-
-run_test_playbook() {
   # `env -i` starts with an empty environment, so only the vars
   # explicitly passed are present.
   env_cmd=(env -i)
@@ -595,10 +590,11 @@ run_test_playbook() {
   echo "ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}"
   echo "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}"
 
-  # "${env_cmd[@]}" ansible-playbook -v "${TEST_PATH}"
-  # "${env_cmd[@]}" ansible-playbook -vv "${TEST_PATH}"
-  # "${env_cmd[@]}" ansible-playbook -vvv "${TEST_PATH}"
-  "${env_cmd[@]}" ansible-playbook "${TEST_PATH}"
+  # "${env_cmd[@]}" ansible-playbook -v "${PLAYBOOK_PATH}"
+  # "${env_cmd[@]}" ansible-playbook -vv "${PLAYBOOK_PATH}"
+  # "${env_cmd[@]}" ansible-playbook -vvv "${PLAYBOOK_PATH}"
+  # "${env_cmd[@]}" ansible-playbook "${PLAYBOOK_PATH}"
+  "${env_cmd[@]}" ansible-playbook "${PLAYBOOK_PATH}"
 
 }
 
@@ -613,8 +609,7 @@ main() {
   save_variables_to_env_file
   print_distro
   install_ansible || { echo "Ansible installation failed; aborting."; exit 1; }
-  # run_playbook || { echo "Playbook run failed; aborting."; exit 1; }
-  run_test_playbook || { echo "Playbook run failed; aborting."; exit 1; }
+  run_playbook || { echo "Playbook run failed; aborting."; exit 1; }
 }
 
 main "$@"
