@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# scripts/import-gpg.sh
+# Non-interactive idempotent import of embedded GPG public key.
+# Run as root (direct or via sudo) to import into root, admin, and user keyrings.
+# Run as non-root to import into caller's keyring only.
+set -euo pipefail
+
+WORK_DIR="$(mktemp -d)"
+KEY_FILE="${WORK_DIR}/spasm-operator.pub.asc"
+
+cat > "${KEY_FILE}" <<'EOF'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEXp05whYJKwYBBAHaRw8BAQdAx4t0Zss1dqJlUKrbc5vMtI/N0ZYMqGABycOo
+K5MmuS2IywQfFgoAfQWCXp05wgMLCQcJEBmJZCH0rp6kRxQAAAAAAB4AIHNhbHRA
+bm90YXRpb25zLnNlcXVvaWEtcGdwLm9yZ5OB2uWPxYoTXSe0jBgI3299NsJdRx6w
+7a87G77jOS56AxUKCAKbAwIeARYhBA3qF0OmdC8lz4Ok5RmJZCH0rp6kAABd9gD/
+aVOx6doEU9d7VquPXJH02+l6qmcjhbX7hvPWuz74USQA+wReoICBlk355AYkvYXO
+L4dZl1/2X3t8nIm7H2SMdiQPtCdkZWdlbnJvY2tldCA8bm9yZXBseUBkZWdlbnJv
+Y2tldC5zcGFjZT6IkwQTFgoAOxYhBA3qF0OmdC8lz4Ok5RmJZCH0rp6kBQJkRJUe
+AhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEBmJZCH0rp6kl3gA/3Ah
+rnK0vyPWuRVsLRoMovQtEGNfFrHtBiIx1IDsbOY5AQCEaDZ1OsAId9vaKdP1abXo
+xOBfUka/4EVIP0nW8ioYDbg4BF6dOcISCisGAQQBl1UBBQEBB0BV/39B5T6ufCng
+QjVNqZBZHufyAR3ey/sc6q+dbeKqRQMBCAeIwwQYFgoAdQWCXp05wgkQGYlkIfSu
+nqRHFAAAAAAAHgAgc2FsdEBub3RhdGlvbnMuc2VxdW9pYS1wZ3Aub3JnFD4GH7+G
+P3AQktWn+fSb4kDuNECnUre7x16Nk9PzSfYCmwgCHgEWIQQN6hdDpnQvJc+DpOUZ
+iWQh9K6epAAASxwBAK58/AXXh35J/bWBlyfo+f9Co5lbCSur6p1N/OMnTM5YAQCx
+NhvV3CpqJHGPd5W6qobN+IABW1eTv2x3XPvimoPfCg==
+=pH7I
+-----END PGP PUBLIC KEY BLOCK-----
+EOF
+
+# Make key file readable by all users because gpg will run
+# as different users
+chmod 755 "${WORK_DIR}"
+chmod 644 "${KEY_FILE}"
+
+cleanup() {
+  rm -rf "${WORK_DIR}"
+}
+trap cleanup EXIT
+
+# Detect original caller (admin running via sudo appears as root via id -u,
+# but SUDO_USER is set to the original invoking user)
+CALLER_UID="$(id -u)"
+CALLER_USER="$(whoami)"
+if [[ "${CALLER_UID}" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+  # Invoked via sudo by a non-root user; treat that user as the caller
+  CALLER_USER="${SUDO_USER}"
+fi
+
+# Ensure gpg binary present
+if ! command -v gpg >/dev/null 2>&1; then
+  if command -v gpg2 >/dev/null 2>&1; then
+    ln -s "$(command -v gpg2)" /usr/local/bin/gpg || true
+  else
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -y
+      apt-get install -y gnupg
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y gnupg2
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y gnupg2
+    elif command -v zypper >/dev/null 2>&1; then
+      zypper --non-interactive install gpg2
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -Sy --noconfirm gnupg
+    else
+      echo "ERROR: no supported package manager found to install gnupg" >&2
+      exit 3
+    fi
+  fi
+fi
+
+# Import key for a given user.
+# - Resolves home dir via getent (no hardcoded paths)
+# - Creates ~/.gnupg with correct ownership before import
+# - Uses runuser to invoke gpg as target user (no sudo dependency)
+# - Returns 1 (non-fatal) if user not found; fatal only for caller
+import_for_user() {
+  local user="$1"
+  local fatal="${2:-false}"  # if true, failure exits script
+
+  local home
+  home="$(getent passwd "${user}" 2>/dev/null | cut -d: -f6 || true)"
+
+  if [[ -z "${home}" ]]; then
+    echo "Warning: user '${user}' not found, skipping" >&2
+    if [[ "${fatal}" == "true" ]]; then
+      exit 5
+    fi
+    return 1
+  fi
+
+  local gnupg_dir="${home}/.gnupg"
+
+  # Create dir as root, then immediately chown to target user so gpg
+  # (running as that user) finds a directory it owns; gpg refuses to
+  # use a .gnupg dir owned by a different user
+  mkdir -p "${gnupg_dir}"
+  chown "${user}:" "${gnupg_dir}"
+  chmod 700 "${gnupg_dir}"
+
+  echo "Importing GPG key for ${user} into ${gnupg_dir}..."
+
+  # runuser: switches to target user without requiring sudoers config;
+  # available on all systemd-based Linux distros (util-linux)
+  if ! runuser -u "${user}" -- gpg --batch --import "${KEY_FILE}"; then
+    echo "ERROR: gpg import failed for ${user}" >&2
+    if [[ "${fatal}" == "true" ]]; then
+      exit 4
+    fi
+    return 1
+  fi
+
+  # Verify all fingerprints from key file are now present in user's keyring
+  mapfile -t FPRS < <(runuser -u "${user}" -- gpg --with-colons --with-fingerprint "${KEY_FILE}" 2>/dev/null \
+    | awk -F: '$1=="fpr"{print $10}')
+
+  for fp in "${FPRS[@]}"; do
+    if runuser -u "${user}" -- gpg --list-keys --with-colons "${fp}" >/dev/null 2>&1; then
+      # Set owner trust to ultimate (5) so git verify-tag doesn't warn about untrusted key
+      echo "${fp}:5:" | runuser -u "${user}" -- gpg --import-ownertrust -
+      echo "  ✓ ${user}: ${fp:0:16}..."
+    else
+      echo "  ✗ ${user}: fingerprint missing after import" >&2
+      if [[ "${fatal}" == "true" ]]; then
+        exit 6
+      fi
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+if [[ "${CALLER_UID}" -eq 0 ]]; then
+  # Running as root (directly or via sudo):
+  # Import for root first (fatal — this is the primary keyring for cron/auto-updates)
+  import_for_user "root" "true"
+
+  # If invoked via sudo by a non-root user (e.g. admin), also import for that user (fatal)
+  if [[ "${CALLER_USER}" != "root" ]]; then
+    import_for_user "${CALLER_USER}" "true"
+  fi
+
+  # Import for remaining managed accounts; non-fatal since they may not exist yet
+  # (e.g. first run before user_and_groups role has created them)
+  for managed_user in "admin" "user"; do
+    # Skip if already handled above (e.g. CALLER_USER=admin)
+    if [[ "${managed_user}" == "${CALLER_USER}" ]]; then
+      continue
+    fi
+    import_for_user "${managed_user}" "false"
+  done
+
+else
+  # Running as non-root: import for caller only (fatal)
+  import_for_user "${CALLER_USER}" "true"
+fi
+
+echo "import-gpg: done"
+exit 0

@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# scripts/fetch-verify-repo.sh
+# Fetch latest (or specified) semver git tag, verify GPG signatures, and swap production repo.
+# Usage: fetch-verify-repo.sh [--tag TAG]
+# Runs as root (cron) or admin (via sudo); uses caller's GPG keyring (~/.gnupg).
+# Note: Repo is owned by root; admin/user get copies via copy_files role after setup.
+set -euo pipefail
+
+REPO_URL="https://github.com/spasm-network/spasm-ansible.git"
+PROD_REPO_DIR="${HOME}/spasm-ansible"
+LOGS_DIR="/var/log/spasm-ansible"
+LOG_FILE="${LOGS_DIR}/fetch-verify-repo.log"
+LOCK_FILE="/var/run/fetch-verify-repo.lock"
+# Allowed signer key fingerprints (40-char hex, uppercase); all comparisons normalized to uppercase
+ALLOWED_KEY_FPS=("ABCD1234567890ABCD1234567890ABCD1234ABCD")
+
+TARGET_TAG=""
+FETCH_DIR=""
+BACKUP_DIR=""
+EXIT_CODE=0
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tag) TARGET_TAG="$2"; shift 2;;
+    *) echo "Unknown arg: $1"; exit 2;;
+  esac
+done
+
+# Ensure logs dir exists (root-owned, secure)
+mkdir -p "${LOGS_DIR}"
+chmod 700 "${LOGS_DIR}"
+touch "${LOG_FILE}"
+chmod 600 "${LOG_FILE}"
+
+log_msg() {
+  local msg="$1"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] ${msg}"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] ${msg}" >> "${LOG_FILE}"
+}
+
+log_error() {
+  local msg="$1"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: ${msg}" >&2
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: ${msg}" >> "${LOG_FILE}"
+}
+
+# Cleanup: only remove FETCH_DIR if swap succeeded (exit code 0)
+# On failure, keep FETCH_DIR for forensic/debug purposes
+cleanup() {
+  if [[ ${EXIT_CODE} -eq 0 && -n "${FETCH_DIR}" && -d "${FETCH_DIR}" ]]; then
+    rm -rf "${FETCH_DIR}"
+  elif [[ ${EXIT_CODE} -ne 0 && -n "${FETCH_DIR}" && -d "${FETCH_DIR}" ]]; then
+    log_msg "Keeping FETCH_DIR for debugging: ${FETCH_DIR}"
+  fi
+}
+trap cleanup EXIT
+
+# Trap: on non-zero exit, restore backup if PROD_REPO_DIR is missing or incomplete
+# On success (exit 0), trap does not restore; BACKUP_DIR is already deleted
+trap_exit() {
+  EXIT_CODE=$?
+  if [[ ${EXIT_CODE} -ne 0 ]]; then
+    if [[ -d "${BACKUP_DIR}/old" ]] && [[ ! -d "${PROD_REPO_DIR}" || ! -f "${PROD_REPO_DIR}/server-setup" ]]; then
+      log_error "Script failed; restoring backup..."
+      rm -rf "${PROD_REPO_DIR}" 2>/dev/null || true
+      mv "${BACKUP_DIR}/old" "${PROD_REPO_DIR}"
+      log_msg "Backup restored to ${PROD_REPO_DIR}"
+    fi
+  fi
+  rm -f "${LOCK_FILE}"
+}
+trap trap_exit EXIT
+
+# Acquire lock to prevent concurrent runs
+exec 200>"${LOCK_FILE}"
+if ! flock -n 200; then
+  log_error "Another fetch-verify-repo run is in progress"
+  exit 1
+fi
+
+# Set GNUPGHOME for all runs (root cron, root direct, or admin via sudo)
+if [[ "$(id -u)" -eq 0 ]]; then
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    # Running via sudo by admin — use admin's keyring
+    export GNUPGHOME="/home/${SUDO_USER}/.gnupg"
+  else
+    # Running as root directly — use root's keyring
+    export GNUPGHOME="/root/.gnupg"
+  fi
+else
+  # Running as non-root user — use their keyring
+  export GNUPGHOME="${HOME}/.gnupg"
+fi
+
+# Verify GNUPGHOME exists and is accessible
+if [[ -z "${GNUPGHOME:-}" ]] || [[ ! -d "${GNUPGHOME}" ]]; then
+  log_error "GNUPGHOME not set or does not exist: ${GNUPGHOME:-<unset>}"
+  exit 3
+fi
+
+log_msg "Using GPG keyring: ${GNUPGHOME}"
+
+# Ensure git is available
+if ! command -v git >/dev/null 2>&1; then
+  log_error "git not found"
+  exit 4
+fi
+
+# Create secure temp dirs
+FETCH_DIR=$(mktemp -d /var/tmp/fetch-verify-repo.XXXXXX)
+chmod 700 "${FETCH_DIR}"
+BACKUP_DIR=$(mktemp -d /tmp/backup-repo.XXXXXX)
+chmod 700 "${BACKUP_DIR}"
+
+# Clone repo to temp dir (shallow fetch for tag only)
+log_msg "Cloning ${REPO_URL} to ${FETCH_DIR} (shallow fetch)..."
+if ! git clone --quiet --no-checkout "${REPO_URL}" "${FETCH_DIR}" 2>>"${LOG_FILE}"; then
+  log_error "Failed to clone repo"
+  exit 5
+fi
+
+cd "${FETCH_DIR}"
+
+# Fetch all tags first (needed for tag selection and type detection)
+log_msg "Fetching tags from origin..."
+if ! git fetch --quiet origin "refs/tags/*:refs/tags/*" 2>>"${LOG_FILE}"; then
+  log_error "Failed to fetch tags"
+  exit 6
+fi
+
+# Determine target tag
+if [[ -z "${TARGET_TAG}" ]]; then
+  # Find latest semver tag (v1.2.3 format)
+  TARGET_TAG=$(git tag -l 'v*' --sort=-version:refname 2>/dev/null | head -1)
+  
+  if [[ -z "${TARGET_TAG}" ]]; then
+    log_error "No semver tags found (v*)"
+    exit 7
+  fi
+  
+  log_msg "Latest tag: ${TARGET_TAG}"
+else
+  log_msg "Using specified tag: ${TARGET_TAG}"
+  
+  # Verify tag exists
+  if ! git rev-parse "${TARGET_TAG}" >/dev/null 2>&1; then
+    log_error "Tag ${TARGET_TAG} not found"
+    exit 8
+  fi
+fi
+
+# Check if production repo is already at this tag
+if [[ -d "${PROD_REPO_DIR}/.git" ]]; then
+  cd "${PROD_REPO_DIR}"
+  CURRENT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
+  cd "${FETCH_DIR}"
+  
+  if [[ "${CURRENT_TAG}" == "${TARGET_TAG}" ]]; then
+    log_msg "Production repo already at ${TARGET_TAG}, skipping"
+    exit 0
+  fi
+fi
+
+# Detect tag type: annotated (tag object) or lightweight (commit)
+TAG_OBJECT_TYPE=$(git for-each-ref --format='%(objecttype)' "refs/tags/${TARGET_TAG}" 2>/dev/null || echo "")
+
+if [[ -z "${TAG_OBJECT_TYPE}" ]]; then
+  log_error "Failed to determine tag type for ${TARGET_TAG}"
+  exit 9
+fi
+
+log_msg "Tag type: ${TAG_OBJECT_TYPE}"
+
+# Helper: extract fingerprint from gpg output (robust parsing)
+extract_fingerprint() {
+  local gpg_output="$1"
+  local fpr
+  fpr=$(echo "${gpg_output}" | gpg --with-colons --verify - 2>&1 | awk -F: '$1=="fpr"{print $10; exit}')
+  
+  if [[ -z "${fpr}" ]]; then
+    # Fallback: try to extract keyid and query keyring
+    local keyid
+    keyid=$(echo "${gpg_output}" | gpg --with-colons --verify - 2>&1 | awk -F: '$1=="sig"{print $5; exit}')
+    
+    if [[ -n "${keyid}" ]]; then
+      fpr=$(gpg --with-colons --list-keys "${keyid}" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+    fi
+  fi
+  
+  echo "${fpr}"
+}
+
+# Handle annotated vs lightweight tags
+if [[ "${TAG_OBJECT_TYPE}" == "tag" ]]; then
+  # Annotated tag: verify tag signature using git tag -v (invokes gpg internally)
+  log_msg "Verifying GPG signature on annotated tag ${TARGET_TAG}..."
+  TAG_VERIFY_OUTPUT=$(git tag -v "${TARGET_TAG}" 2>&1 || true)
+  
+  if ! echo "${TAG_VERIFY_OUTPUT}" | grep -q "Good signature"; then
+    log_error "Tag signature verification failed for ${TARGET_TAG}"
+    echo "${TAG_VERIFY_OUTPUT}" >> "${LOG_FILE}"
+    exit 10
+  fi
+  log_msg "✓ Tag signature valid"
+  
+  # Extract full fingerprint from tag signature
+  SIGNER_KEY_FP=$(extract_fingerprint "$(git cat-file -p "${TARGET_TAG}")")
+  
+  if [[ -z "${SIGNER_KEY_FP}" ]]; then
+    log_error "Failed to extract signer key fingerprint from tag ${TARGET_TAG}"
+    exit 11
+  fi
+  
+elif [[ "${TAG_OBJECT_TYPE}" == "commit" ]]; then
+  # Lightweight tag: no tag object, verify commit signature instead
+  log_msg "Lightweight tag detected; verifying commit signature instead..."
+  COMMIT=$(git rev-list -n 1 "${TARGET_TAG}")
+  
+  # Ensure commit object is available locally
+  if ! git cat-file -e "${COMMIT}" 2>/dev/null; then
+    log_msg "Commit ${COMMIT} not available; fetching..."
+    if ! git fetch --quiet --depth=1 origin "${COMMIT}:refs/fetched/${COMMIT}" 2>>"${LOG_FILE}"; then
+      log_error "Failed to fetch commit ${COMMIT}"
+      exit 12
+    fi
+  fi
+  
+  COMMIT_VERIFY_OUTPUT=$(git verify-commit "${COMMIT}" 2>&1 || true)
+  
+  if ! echo "${COMMIT_VERIFY_OUTPUT}" | grep -q "Good signature"; then
+    log_error "Commit signature verification failed for lightweight tag ${TARGET_TAG}"
+    echo "${COMMIT_VERIFY_OUTPUT}" >> "${LOG_FILE}"
+    exit 13
+  fi
+  log_msg "✓ Commit signature valid"
+  
+  # Extract full fingerprint from commit signature
+  SIGNER_KEY_FP=$(extract_fingerprint "$(git cat-file -p "${COMMIT}")")
+  
+  if [[ -z "${SIGNER_KEY_FP}" ]]; then
+    log_error "Failed to extract signer key fingerprint from commit"
+    exit 14
+  fi
+else
+  log_error "Unknown tag type: ${TAG_OBJECT_TYPE}"
+  exit 15
+fi
+
+# Normalize fingerprint case (uppercase) and validate format
+SIGNER_KEY_FP="${SIGNER_KEY_FP^^}"
+if [[ ! "${SIGNER_KEY_FP}" =~ ^[A-F0-9]{40}$ ]]; then
+  log_error "Invalid fingerprint format: ${SIGNER_KEY_FP}"
+  exit 16
+fi
+
+# Allowlist check (compare full 40-char fingerprints, both uppercase)
+ALLOWED=false
+for allowed_fp in "${ALLOWED_KEY_FPS[@]}"; do
+  if [[ "${SIGNER_KEY_FP}" == "${allowed_fp^^}" ]]; then
+    ALLOWED=true
+    break
+  fi
+done
+
+if [[ "${ALLOWED}" != "true" ]]; then
+  log_error "Signer key fingerprint ${SIGNER_KEY_FP} not in allowlist"
+  exit 17
+fi
+
+log_msg "✓ Signer key fingerprint ${SIGNER_KEY_FP:0:16}... is allowed"
+
+# Get commit that tag points to
+COMMIT=$(git rev-list -n 1 "${TARGET_TAG}")
+log_msg "Tag points to commit: ${COMMIT}"
+
+# Ensure commit is available before verifying
+if ! git cat-file -e "${COMMIT}" 2>/dev/null; then
+  log_msg "Commit ${COMMIT} not available; fetching..."
+  if ! git fetch --quiet --depth=1 origin "${COMMIT}:refs/fetched/${COMMIT}" 2>>"${LOG_FILE}"; then
+    log_error "Failed to fetch commit ${COMMIT}"
+    exit 18
+  fi
+fi
+
+# For annotated tags, also verify the commit signature (defense in depth)
+if [[ "${TAG_OBJECT_TYPE}" == "tag" ]]; then
+  log_msg "Verifying GPG signature on commit ${COMMIT}..."
+  COMMIT_VERIFY_OUTPUT=$(git verify-commit "${COMMIT}" 2>&1 || true)
+  
+  if ! echo "${COMMIT_VERIFY_OUTPUT}" | grep -q "Good signature"; then
+    log_error "Commit signature verification failed for ${COMMIT}"
+    echo "${COMMIT_VERIFY_OUTPUT}" >> "${LOG_FILE}"
+    exit 19
+  fi
+  log_msg "✓ Commit signature valid"
+fi
+
+# Checkout tag
+log_msg "Checking out ${TARGET_TAG}..."
+if ! git checkout --quiet "${TARGET_TAG}" 2>>"${LOG_FILE}"; then
+  log_error "Failed to checkout ${TARGET_TAG}"
+  exit 20
+fi
+
+# Final verification: verify current commit is signed
+log_msg "Final verification: checking current commit is signed..."
+CURRENT_COMMIT=$(git rev-parse HEAD)
+CURRENT_VERIFY_OUTPUT=$(git verify-commit "${CURRENT_COMMIT}" 2>&1 || true)
+
+if ! echo "${CURRENT_VERIFY_OUTPUT}" | grep -q "Good signature"; then
+  log_error "Current commit ${CURRENT_COMMIT} is not signed"
+  echo "${CURRENT_VERIFY_OUTPUT}" >> "${LOG_FILE}"
+  exit 21
+fi
+log_msg "✓ Current commit is signed"
+
+# Atomic swap with cross-device fallback
+if [[ -d "${PROD_REPO_DIR}" ]]; then
+  log_msg "Backing up production repo to ${BACKUP_DIR}/old..."
+  mv "${PROD_REPO_DIR}" "${BACKUP_DIR}/old"
+fi
+
+log_msg "Swapping production repo..."
+if ! mv "${FETCH_DIR}" "${PROD_REPO_DIR}" 2>>"${LOG_FILE}"; then
+  # mv failed (possibly cross-device); fallback to cp + rm
+  log_msg "mv failed; falling back to cp + rm..."
+  if ! cp -a "${FETCH_DIR}" "${PROD_REPO_DIR}" 2>>"${LOG_FILE}"; then
+    log_error "Failed to copy new repo into place"
+    exit 22
+  fi
+  # Don't remove FETCH_DIR here; let cleanup() handle it (keep for debug on failure)
+fi
+
+# Set ownership and conservative permissions (not world-readable)
+# Root owns repo; admin/user get copies via copy_files role
+# Dirs: 750 (owner+group can read/write/execute, others cannot)
+# Files: 640 (owner+group can read, others cannot); preserve executable bit for scripts
+chown -R root:root "${PROD_REPO_DIR}"
+find "${PROD_REPO_DIR}" -type d -exec chmod 750 {} \;
+find "${PROD_REPO_DIR}" -type f -exec chmod 640 {} \;
+
+# Preserve executable bit for files that should be executable (scripts, binaries)
+# Use git index to detect executable files, or check for shebang
+find "${PROD_REPO_DIR}" -type f \( -path "*/scripts/*" -o -name "server-setup" -o -name "import-gpg" -o -name "fetch-verify-repo" -o -name "init.sh" \) -exec chmod 750 {} \;
+
+log_msg "✓ Permissions set"
+
+# Clean up backup
+if [[ -d "${BACKUP_DIR}" ]]; then
+  log_msg "Removing backup (swap successful)"
+  rm -rf "${BACKUP_DIR}"
+fi
+
+log_msg "fetch-verify-repo: done (${TARGET_TAG})"
+exit 0
