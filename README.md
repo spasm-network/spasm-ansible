@@ -7,7 +7,7 @@ One-script setup for provisioning and hardening a fresh VPS from scratch. Suppor
 two modes: (1) local — run directly on the VPS, (2) remote — run from host machine 
 via SSH. Fully idempotent with distro modularity (Debian/Ubuntu, RedHat/CentOS/Fedora).
 
-Manager clones repo to target VPS (local mode) or host machine (remote mode), runs init.sh,
+Manager clones repo to target VPS (local mode) or host machine (remote mode), runs server-setup,
 and answers prompts for admin password, domain, etc. After playbook completes, entire repo
 (including scripts/ and .env) is copied to 'user' and 'admin' accounts on server; in remote
 mode, also copied to 'root' for Ansible access. Thus, manager can use scripts from both
@@ -29,28 +29,24 @@ Includes roles:
 
 FOLDER STRUCTURE:
 .
-├── init.sh                    # Single entrypoint (local or remote mode)
+├── server-setup               # Single entrypoint (local or remote mode)
 ├── .env                       # Generated at runtime, stores config (gitignored)
 ├── .gitignore
-├── ansible.cfg
 ├── playbook.yml               # Main playbook
-├── docker.yml                 # Main playbook
-├── inventory/
-│   └── hosts.ini              # Generated dynamically by init.sh
 ├── roles/
 │   ├── logging/               # Log variables
 │   ├── user_and_groups/       # Create 'user' and 'admin' with sudo
-│   ├── copy_files/            # Copy ansible and ssh folders to 'admin'
+│   ├── copy_files/            # Copy ssh dir to 'user', ansible dir to 'admin'
 │   ├── system_updates/        # apt/dnf/zypper upgrades + auto-updates
-│   ├── nginx_proxy/           # Reverse proxy config
-│   ├── sshd_hardening/        # SSH config
-│   ├── firewall_enable/       # firewalld setup
+│   ├── firewall_preopen/
+│   ├── sshd_hardening/
+│   ├── nginx_proxy/
+│   ├── ssl_certificate/       # Let's Encrypt via certbot
 │   ├── container_runtime/     # Install container runtime (podman/docker)
-│   ├── ssl_certificate/       # Let's Encrypt via acme.sh/certbot (staging→prod flow)
-│   └── app_deployment/        # Clone/run app in container
-├── group_vars/
-│   └── all.yml                # Shared variables
-└── scripts/                   # Management scripts (copied to both 'user' and 'admin')
+│   ├── app_deployment/
+│   ├── firewall_enable/
+│   └── fail2ban/
+└── scripts/                   # Management scripts (copied to 'admin')
     ├── server/
     │   ├── update
     │   ├── reboot
@@ -61,50 +57,58 @@ FOLDER STRUCTURE:
     └── firewall/
         └── status
 
-KEY NOTES:
+## KEY NOTES:
 
-1. ADMIN_PASSWORD HANDLING:
-   - Hash immediately in init.sh, never store plaintext
-   - Store only hash in .env (safe)
-   - Use Ansible `update_password: on_create` for idempotency
-   - Wipe plaintext from memory after hashing
+### ADMIN_PASSWORD HANDLING:
+- Hash immediately in server-setup, never store plaintext
+- Store only hash in .env
+- Use Ansible `update_password: on_create` for idempotency
+- Wipe plaintext from memory after hashing
 
-2. IDEMPOTENCY:
-   - All tasks safe to re-run; .env prompt asks to confirm/change vars
-   - Admin password only set on first user creation
-   - Admin password only used to manage server (sudo), not app web admin panel
-   - Existing configs not overwritten unless explicitly changed
+### IDEMPOTENCY:
+- All tasks safe to re-run; .env prompt asks to confirm/change vars
+- Admin password only used to manage server (sudo), not app web admin panel
+- Existing configs not overwritten unless explicitly changed
 
-3. SYSTEM UPDATES: idempotent per-distro updates and auto-update config; needrestart/dnf-automatic/yast used; reboots are deferred (flag file /var/run/reboot-required) and performed only via admin reboot script.
+### SYSTEM UPDATES:
+- idempotent per-distro updates and auto-update config;
+- needrestart/dnf-automatic/yast used;
+- reboots are deferred (flag file /var/run/reboot-required) and performed only via admin reboot script.
 
-4. DISTRO MODULARITY:
-   - Use `include_vars` + `include_tasks` keyed on `ansible_os_family`
-   - Example: roles/sshd_hardening/tasks/main.yml includes Debian.yml or RedHat.yml
-   - vars/ folder contains distro-specific package names, paths, etc.
+### DISTRO MODULARITY:
+- Use `include_vars` + `include_tasks` keyed on `ansible_os_family`
+- Example: roles/sshd_hardening/tasks/main.yml includes Debian.yml or RedHat.yml
+- vars/ folder contains distro-specific package names, paths, etc.
 
-5. LOCAL vs REMOTE MODE:
-   - Single init.sh with optional --remote flag
-   - Only difference: inventory generation (localhost vs remote IP)
-   - Playbook + roles identical for both modes
+### LOCAL vs REMOTE MODE (not implemented yet):
+- Single server-setup with optional --remote flag (WIP)
+- Only difference: inventory generation (localhost vs remote IP)
+- Playbook + roles identical for both modes
 
-6. SCRIPTS FOLDER:
-   - Manager can update ansible git repo to get new scripts (from admin or root)
+### SCRIPTS FOLDER:
+- Operator can update ansible git repo to get new scripts (from admin or root)
 
-7. USAGE:
-   Local:  git clone repo-url && cd repo-name && bash init.sh
-   Remote: bash init.sh --remote --host 1.2.3.4 --key ~/.ssh/id_ed25519
-   Scripts: bash ./scripts/user/app/view-logs  OR  su - admin && bash ./scripts/admin/server/update
-   .env or role config: allow opt-out or "auto_reboot: true/false" (default false) 
+### USAGE:
+- Local: git clone repo-url && cd repo-name && bash server-setup
+- Remote: bash server-setup --remote --host 1.2.3.4 --key ~/.ssh/id_ed25519
+- Scripts: bash ./scripts/user/app/view-logs OR su - admin && bash ./scripts/admin/server/update
+- .env or role config: allow opt-out or "auto_reboot: true/false" (default false) 
 
-8. SECURITY:
-   - .env file: chmod 600, gitignored
-   - SSH keys passed via --key flag (remote mode)
-   - No plaintext passwords stored anywhere
+### SECURITY:
+- .env file: chmod 600, gitignored
+- SSH keys passed via --key flag (remote mode, not implemented yet)
+- no plaintext passwords stored anywhere
+- all packages are installed from the distro's default repositories.
 
-9. NGINX & SSL:
-   - nginx_proxy: installs nginx, deploys HTTP reverse proxy to 127.0.0.1:33333, prepares ACME challenge location, idempotent template + config validation.
-   - ssl_certificate: obtains Lets Encrypt certs via `certbot --nginx` on first run (EXPIRING/MISSING), then runs `certbot install` every run to ensure HTTPS block is present (idempotent, does not re-issue certs, preserves certbot's modifications). Re-invokes nginx_proxy role every run to ensure template applied (fixes config drift). Primary renewal via cron/systemd daily (default 3 AM); safeguard cron at 4 AM auto-renews if cert expires within 7 days (gives certbot 23 days to renew first).
-   - Backs up nginx config before certbot edits; restores on failure. Logs all activity with timestamps to /var/log/letsencrypt/renewal-check.log; alerts root if renewal fails. Safeguard script uses `flock` to prevent concurrent runs. Safe to re-run; fixes config drift if something breaks.
+### NGINX & SSL:
+- nginx_proxy: installs/enables nginx; deploys HTTP reverse proxy to 127.0.0.1:33333; prepares ACME webroot (/var/www/certbot) and HTTP-01 location; renders idempotent site templates, runs `nginx -t` and reloads on success; HTTPS disabled until certs_present is true.
+- ssl_certificate: runs `certbot --nginx` on first run (EXPIRING/MISSING); each run re-invokes nginx_proxy and runs `certbot install --nginx` (idempotent, preserves certbot changes) to ensure HTTPS block; daily `certbot renew` (default 03:00) with a 04:00 safeguard that renews if cert expires within 7 days.
+- Ops: backup nginx site config before certbot edits and restore on failure; safeguard uses `flock`; logs renewal-checks to /var/log/letsencrypt/renewal-check.log and alerts root on failure; safe to re-run and fixes config drift.
+
+###  USERS:
+- root owns infrastructure (initial setup, auto-updates, no ssh)
+- admin owns manual interventions (sudo, manual updates, no ssh)
+- user runs app with podman (no sudo, ssh login allowed)
 
 
 
@@ -117,7 +121,10 @@ root (initial setup only, minimal access after)
     ├── ansible/
     ├── scripts/
     ├── .env
-    └── init.sh
+    ├── import-gpg
+    ├── verify-repo
+    ├── init.sh
+    └── server-setup
 
 user (runs docker/podman app, no sudo)
 ├── .ssh/
@@ -134,19 +141,104 @@ admin (infrastructure management, sudo access, no ssh)
     ├── ansible/
     ├── scripts/
     ├── .env
-    └── init.sh
+    ├── import-gpg
+    ├── verify-repo
+    ├── init.sh
+    └── server-setup
 
 Other notes:
-- root: used only for initial install then disabled; manager SSHs as 'user' (no password) and uses su - admin + password for sudo.
-- Preflight checks in init.sh: verify network connectivity, disk space (>X GB), supported distro, and local Ansible >= required version.  
-- Dry-run: init.sh supports a --check mode that runs ansible-playbook --check.  
+- root: used for initial server setup then ssh disabled, but runs server-setup script periodically for auto-updates; operator SSHs as 'user' (no password) and uses `su - admin` + password for manual interventions with sudo.
+- Preflight checks in server-setup: verify network connectivity, disk space (>X GB), supported distro, and local Ansible >= required version. (todo) 
+- Dry-run: server-setup supports a `--check` mode that runs ansible-playbook `--check`. 
 - Post-run stamp/logs: after success write timestamp + minimal JSON summary into repo folder logs (ansible/logs/last_run.json) and rotate logs.  
 - nginx: templates rendered idempotently; before reload run nginx -t && systemctl reload nginx; on test fail keep previous config and log error. Ensure reruns are safe.  
-- SSL: use either certbot with lets encrypt without email address, or use staging→production ACME flow (acme.sh preferred for bootstrap automation); run staging first to validate automation. Store keys with 600 perms; implement expiry monitoring since email will be omitted.  
-- Defer reboots for auto-updates (optiona): install security updates but defer reboots; create /var/run/pending-reboot when reboot required; scripts/admin/server/reboot performs safe reboot on admin confirmation.  
+- Defer reboots for auto-updates (optional): install security updates but defer reboots; create /var/run/pending-reboot when reboot required; scripts/admin/server/reboot performs safe reboot on admin confirmation.  
 - Firewall: ensure Ansible SSH rule present before enabling firewall to avoid lockout.  
 
 
+## Full server auto-updates with Ansible
+
+Auto-updates with Ansible are managed with scripts (not roles), but a role adds a cron job for auto-updates to execute.
+
+`server-setup` script (Main Orchestrator)
+
+1. Call `import-gpg` (ensure GPG key in keyring for root, admin, and user)
+2. Call `fetch-verify-repo` (clone to temp, verify, swap if good)
+3. Call `init.sh` (with or without `--auto-update`)
+
+`import-gpg` script
+
+- Installs GPG (idempotent, distro-aware)
+- Imports embedded GPG public key into keyrings:
+  - root: always (required for cron auto-updates and signature verification)
+  - admin: if running as root or via sudo from admin (required for manual repo verification)
+  - user: if running as root or via sudo (required for app repo signature verification)
+- Non-fatal if admin/user accounts do not exist yet (e.g., first run before `user_and_groups` role)
+- Uses `runuser` to switch users (no sudoers dependency)
+- Sets owner trust to "ultimate" (5) on imported keys so git verify-tag works without warnings
+- Idempotent: `gpg --import` skips already-imported keys
 
 
+`fetch-verify-repo` script
 
+Fetches latest (or specified) semver git tag, verifies GPG signatures, and atomically swaps production repo.
+
+**Verification steps:**
+1. Acquires lock to prevent concurrent runs
+2. Clones repo to secure temp directory (`/var/tmp/fetch-verify-repo-<timestamp>`)
+3. Fetches all tags and identifies latest semver tag (v1.2.3 format)
+4. Skips if production repo already at target tag (idempotent)
+5. Detects tag type: annotated (tag object) or lightweight (commit)
+6. Verifies GPG signature on tag (annotated) or commit (lightweight)
+7. Extracts signer key fingerprint and checks against allowlist
+8. Verifies GPG signature on commit the tag points to (defense in depth)
+9. Checks out verified tag in temp directory
+10. Final verification: ensures current commit is signed
+11. Atomically swaps temp repo into production (with cross-device fallback)
+12. Sets secure ownership (root:root) and permissions (750 dirs, 640 files, 750 scripts)
+13. On success: deletes backup, cleans up temp
+14. On failure: restores backup from temp, keeps temp for forensic debugging
+
+**Keyring & allowlist:**
+- Uses caller's GPG keyring (`~/.gnupg`); ensure `import-gpg` has been run first
+- Compares signer fingerprint against `ALLOWED_KEY_FPS` array (40-char hex, case-normalized)
+- Fails if signature is invalid or signer not in allowlist
+
+**Usage:**
+```bash
+bash scripts/fetch-verify-repo.sh              # Fetch and verify latest tag
+bash scripts/fetch-verify-repo.sh --tag v1.2.5 # Fetch and verify specific tag
+sudo bash scripts/fetch-verify-repo.sh         # Run as admin via sudo
+```
+
+`init.sh`
+
+- Takes `--auto-update` flag (optional)
+- If `--auto-update`: read vars from `.env` (non-interactive)
+- If no flag: prompt operator for vars
+- Run ansible playbook locally
+- Log everything
+
+### Operator Workflow
+
+Day 1 (Setup from root):
+```
+1. SSH into new VPS as root
+2. git clone https://github.com/spasm-network/spasm-ansible.git ~/spasm-ansible/
+3. cd ~/spasm-ansible
+4. bash server-setup
+   - Calls import-gpg (imports key into root, admin, user keyrings; sets owner trust)
+   - Calls fetch-verify-repo (verifies repo using root's keyring; atomically swaps)
+   - Calls init.sh (runs playbook, creates admin/user accounts)
+5. Wait for completion
+6. Server is live
+```
+
+Day 4, 7, 10, etc. (Automatic):
+- Cron runs from root: `bash ~/spasm-ansible/server-setup --auto-update`
+  - Calls import-gpg (idempotent; key already present)
+  - Calls fetch-verify-repo (verifies latest tag using root's keyring; skips if already at tag)
+  - Calls init.sh (runs playbook with non-interactive vars from .env)
+- All autonomous, no operator interaction
+- On verification failure: keeps temp directory for debugging, restores backup, exits with error
+- On success: logs to `/var/log/spasm-ansible/fetch-verify-repo.log`
