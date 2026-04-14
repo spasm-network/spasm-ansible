@@ -298,9 +298,8 @@ if ! git tag -v "${TARGET_TAG}" >>"${LOG_FILE}" 2>&1; then
 fi
 log_msg "✓ Tag signature valid"
 
-# Extract signer fingerprint from tag object using git cat-file + gpg --status-fd
-# This is more robust than piping git tag -v output
-TAG_OBJECT=$(git cat-file -p "refs/tags/${TARGET_TAG}")
+# Get the raw tag object (includes signature)
+TAG_OBJECT=$(git cat-file tag "refs/tags/${TARGET_TAG}")
 TAG_VERIFY_STATUS=$(echo "${TAG_OBJECT}" | gpg --batch --no-tty --status-fd=1 --verify - 2>&1 || true)
 
 # Check for both GOODSIG (signature is valid) and VALIDSIG (contains fingerprint)
@@ -393,7 +392,7 @@ fi
 # Verify commit signature using git cat-file + gpg --status-fd
 # This is more robust than piping git verify-commit output
 log_msg "Verifying commit signature for ${COMMIT}..."
-COMMIT_OBJECT=$(git cat-file -p "${COMMIT}")
+COMMIT_OBJECT=$(git cat-file commit "${COMMIT}")
 COMMIT_VERIFY_STATUS=$(echo "${COMMIT_OBJECT}" | gpg --batch --no-tty --status-fd=1 --verify - 2>&1 || true)
 
 if ! echo "${COMMIT_VERIFY_STATUS}" | grep -q "^\[GNUPG:\] GOODSIG"; then
@@ -448,7 +447,7 @@ fi
 # Final verification: verify current commit is signed and ultimately trusted
 log_msg "Final verification: checking current commit is signed..."
 CURRENT_COMMIT=$(git rev-parse HEAD)
-CURRENT_OBJECT=$(git cat-file -p "${CURRENT_COMMIT}")
+CURRENT_OBJECT=$(git cat-file commit "${CURRENT_COMMIT}")
 CURRENT_VERIFY_STATUS=$(echo "${CURRENT_OBJECT}" | gpg --batch --no-tty --status-fd=1 --verify - 2>&1 || true)
 
 if ! echo "${CURRENT_VERIFY_STATUS}" | grep -q "^\[GNUPG:\] GOODSIG"; then
