@@ -6,6 +6,7 @@
 - Multi-site support without nginx conflicts (no duplicate global map/upstream errors).
 - Deterministic TLS rendering (render HTTPS only when cert files verified).
 - Idempotent, test-before-reload workflow to avoid service disruption.
+- Role installs and enables the nginx package/service, ensures include of /etc/nginx/sites-enabled/*, deploys shared conf in /etc/nginx/conf.d, tests configs with `nginx -t`, and only reloads on success; failing templates are logged for debugging.
 
 ## Quick concept
 - Shared nginx items used by all sites (map for websocket handling) are deployed once to /etc/nginx/conf.d/websocket.conf.
@@ -29,9 +30,11 @@
 - Creation:
   - Ensures nginx package installed and service enabled.
   - Creates /etc/nginx/sites-available, /etc/nginx/sites-enabled, /etc/nginx/conf.d, and the ACME webroot (certbot_webroot).
+  - Ensures /etc/nginx/nginx.conf includes /etc/nginx/sites-enabled/* (inserts line if missing).
   - Deploys /etc/nginx/conf.d/websocket.conf (map for websockets).
   - Renders per-site /etc/nginx/sites-available/{{ nginx_site_name }} from proxy.conf.j2.
   - Ensures symlink exists in /etc/nginx/sites-enabled and optionally removes default site.
+  - Templates are validated with `nginx -t` and the handler logs failing site templates to /var/log/nginx/failed-<site>-<timestamp>.conf before failing.
 
 - TLS handling:
   - The role checks for ssl_cert_path existence and sets certs_present accordingly.
@@ -57,6 +60,7 @@
 - On SELinux systems, ensure ssl_certificate role or a separate task sets the correct SELinux file contexts on cert files and the certbot_webroot after creation.
 - Consider improving the failure handler to capture nginx -T output for a full assembled config when debugging complex include-related failures.
 - Be cautious with http_redirect_to_https: it will fail the play if certs are absent to avoid accidental misconfiguration.
+- The role installs and manages nginx itself (package + service); HTTPS remains disabled until ssl_certificate sets ssl_cert_path/ssl_key_path and certs_present becomes true.
 
 ## Files of interest
 - tasks/main.yml — orchestration, cert existence check, certs_present fact, template deploys.
