@@ -53,11 +53,11 @@ semver_lt() {
   return 1
 }
 
-# Extract fingerprint from git verify output
+# Extract full fingerprint from git verify output
 # Parses: "Primary key fingerprint: XXXX XXXX ... XXXX" → "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 extract_fingerprint() {
   local verify_output="$1"
-  echo "${verify_output}" | grep "Primary key fingerprint:" | awk '{print $NF}' | tr -d ' ' | head -1
+  echo "${verify_output}" | grep "Primary key fingerprint:" | sed 's/.*fingerprint: //' | tr -d ' '
 }
 
 # Verify fingerprint is in ultimate trust database
