@@ -379,7 +379,7 @@ fi
 
 # Verify commit signature
 log_msg "Verifying commit signature for ${COMMIT}..."
-COMMIT_VERIFY_OUTPUT=$(git verify-commit --raw "${COMMIT}" 2>&1)
+COMMIT_VERIFY_OUTPUT=$(git verify-commit "${COMMIT}" 2>&1)
 if ! echo "${COMMIT_VERIFY_OUTPUT}" | grep -q "Good signature"; then
   log_error "Commit signature verification failed for ${COMMIT}"
   log_error "${COMMIT_VERIFY_OUTPUT}"
@@ -408,7 +408,7 @@ fi
 # Final verification: current commit is signed and ultimately trusted
 log_msg "Final verification: checking current commit is signed..."
 CURRENT_COMMIT=$(git rev-parse HEAD)
-CURRENT_VERIFY_OUTPUT=$(git verify-commit --raw "${CURRENT_COMMIT}" 2>&1)
+CURRENT_VERIFY_OUTPUT=$(git verify-commit "${CURRENT_COMMIT}" 2>&1)
 if ! echo "${CURRENT_VERIFY_OUTPUT}" | grep -q "Good signature"; then
   log_error "Current commit ${CURRENT_COMMIT} is not signed"
   exit 23
