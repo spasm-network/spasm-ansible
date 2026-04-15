@@ -83,6 +83,7 @@ RETRY_SLEEP=5
 
 echo_env_variables() {
   echo "----------------------------------------------------"
+  echo "v0.1.8"
   echo "Environment variables from .env file:"
   # echo "USER: ${USER}"
   # echo "ADMIN: ${ADMIN}"
