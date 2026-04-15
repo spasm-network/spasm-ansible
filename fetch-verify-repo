@@ -425,6 +425,13 @@ if ! verify_ultimate_trust "${CURRENT_SIGNER_FP}"; then
   exit 25
 fi
 
+# Checkout master for normal operations
+log_msg "Checking out master branch..."
+if ! git checkout --quiet master 2>>"${LOG_FILE}"; then
+  log_error "Failed to checkout master"
+  exit 22
+fi
+
 # Pre-swap validation: verify critical scripts exist
 log_msg "Validating critical scripts in fetched repo..."
 for script in "server-setup" "import-gpg" "init" "fetch-verify-repo"; do
