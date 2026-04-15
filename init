@@ -24,6 +24,16 @@ ERROR='\033[38;2;230;57;70m'        # coral-mid     #e63946
 MUTED='\033[38;2;90;100;128m'       # text-muted    #5a6480
 NC='\033[0m' # No Color
 
+# Set NON_INTERACTIVE when --auto-update is passed
+NON_INTERACTIVE=false
+for arg in "$@"; do
+  if [[ "$arg" == "--auto-update" ]]; then
+    NON_INTERACTIVE=true
+    break
+  fi
+done
+export NON_INTERACTIVE
+
 # Import environment variables:
 # USER_NAME
 # ADMIN_NAME
@@ -83,6 +93,18 @@ echo_env_variables() {
 
 get_domain_name() {
   echo "----------------------------------------------------"
+
+  if [[ "${NON_INTERACTIVE}" == "true" ]]; then
+    if [ -n "${DOMAIN_NAME}" ]; then
+      SITE_TLD="${DOMAIN_NAME}"
+      echo "Non-interactive: using DOMAIN_NAME from .env: ${ACCENT}${BOLD}${SITE_TLD}${NC}"
+    else
+      echo "Non-interactive: DOMAIN_NAME not set in .env; proceeding without interactive input."
+      SITE_TLD="${DOMAIN_NAME}"
+    fi
+    return 0
+  fi
+
   ####################################
   # Check if a domain name has been provided in the .env file.
   #
@@ -249,6 +271,16 @@ get_domain_name() {
 
 get_admins() {
   echo "----------------------------------------------------"
+
+  if [[ "${NON_INTERACTIVE}" == "true" ]]; then
+    if [ -n "${ADMINS}" ]; then
+      echo "Non-interactive: using ADMINS from .env: ${ACCENT}${BOLD}${ADMINS}${NC}"
+    else
+      echo "Non-interactive: ADMINS not set in .env; proceeding without interactive input."
+    fi
+    return 0
+  fi
+
   ####################################
   # Check if a domain name has been provided in the .env file.
   #
@@ -340,6 +372,16 @@ get_admin_password() {
   echo "It's not used to access a web admin panel because all"
   echo "admin events are directly signed with your private keys."
   local pass1 pass2 CHANGE_ANS COUNTDOWN_ORIGINAL COUNTDOWN KEY
+
+  if [[ "${NON_INTERACTIVE}" == "true" ]]; then
+    if [ -n "${ADMIN_PASSWORD_HASH:-}" ]; then
+      echo "Non-interactive: using ADMIN_PASSWORD_HASH from .env"
+      return 0
+    else
+      echo "Non-interactive: ADMIN_PASSWORD_HASH not set in .env; aborting." >&2
+      exit 1
+    fi
+  fi
 
   if [ -n "${ADMIN_PASSWORD_HASH:-}" ]; then
     echo "Admin password is found in .env."
