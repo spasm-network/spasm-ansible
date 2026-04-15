@@ -61,8 +61,11 @@
   changed_when: false
 
 - name: Test nginx configuration before certbot
-  command: nginx -t
+  ansible.builtin.command: nginx -t
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/sbin:/usr/local/sbin"
   register: nginx_test_pre
+  changed_when: false
   failed_when: nginx_test_pre.rc != 0
 
 - name: Backup current nginx config before certbot edits
@@ -165,8 +168,11 @@
   when: cert_status.stdout in ["EXPIRING", "MISSING"]
 
 - name: Test nginx configuration after certbot edits
-  command: nginx -t
+  ansible.builtin.command: nginx -t
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/sbin:/usr/local/sbin"
   register: nginx_test
+  changed_when: false
   failed_when: nginx_test.rc != 0
   when: cert_status.stdout in ["EXPIRING", "MISSING"]
 
