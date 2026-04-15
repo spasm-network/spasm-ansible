@@ -1,0 +1,63 @@
+---
+# To run weekly instead of daily:
+#   Set AUTO_UPDATE_FREQUENCY_DAYS: 7 in playbook vars or .env
+#
+# To run every 3 days:
+#   Set AUTO_UPDATE_FREQUENCY_DAYS: 3 in playbook vars or .env
+#
+# Examples in playbook.yml:
+#   - role: cron_auto_update
+#     vars:
+#       AUTO_UPDATE_FREQUENCY_DAYS: 7  # weekly
+#   
+#   - role: cron_auto_update
+#     vars:
+#       AUTO_UPDATE_FREQUENCY_DAYS: 3  # every 3 days
+
+- name: Create log directory for auto-update
+  ansible.builtin.file:
+    path: "{{ AUTO_UPDATE_LOG_DIR }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  become: true
+
+- name: Create cron job for auto-update with locking
+  ansible.builtin.cron:
+    name: "spasm-ansible auto-update"
+    day: "*/{{ AUTO_UPDATE_FREQUENCY_DAYS }}"
+    hour: "{{ AUTO_UPDATE_HOUR }}"
+    minute: "{{ AUTO_UPDATE_MINUTE }}"
+    job: "/usr/bin/flock -n {{ AUTO_UPDATE_LOCK_FILE }} /bin/bash {{ AUTO_UPDATE_SCRIPT }} --auto-update >> {{ AUTO_UPDATE_LOG_FILE }} 2>&1 || echo '[{{ ansible_date_time.iso8601 }}] auto-update lock held; skipping' >> {{ AUTO_UPDATE_LOG_FILE }}"
+    user: root
+    state: present
+  become: true
+
+- name: Create logrotate config for auto-update logs
+  ansible.builtin.copy:
+    content: |
+      {{ AUTO_UPDATE_LOG_FILE }} {
+        daily
+        rotate 14
+        compress
+        delaycompress
+        missingok
+        notifempty
+        create 0600 root root
+      }
+    dest: /etc/logrotate.d/spasm-auto-update
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+
+- name: Log cron job configuration
+  ansible.builtin.lineinfile:
+    path: "{{ AUTO_UPDATE_LOG_DIR }}/cron_auto_update.log"
+    line: "[{{ ansible_date_time.iso8601 }}] Cron job configured: every {{ AUTO_UPDATE_FREQUENCY_DAYS }} day(s) at {{ AUTO_UPDATE_HOUR }}:{{ AUTO_UPDATE_MINUTE }} UTC"
+    create: yes
+    owner: root
+    group: root
+    mode: '0600'
+  become: true
