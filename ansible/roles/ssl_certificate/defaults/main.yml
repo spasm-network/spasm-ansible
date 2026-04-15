@@ -1,5 +1,5 @@
 ---
-# Primary domain (required) — set DOMAIN_NAME in environment via init.sh
+# Primary domain (required) — set DOMAIN_NAME in environment via init
 ssl_domain: "{{ lookup('env','DOMAIN_NAME') or '' }}"
 
 # Subdomains to include in the cert (bare labels expanded to label.ssl_domain)
