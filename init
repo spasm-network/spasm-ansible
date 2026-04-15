@@ -589,6 +589,9 @@ install_ansible() {
 }
 
 run_playbook() {
+  # Change to repo directory to ensure cwd exists
+  cd "${THIS_SCRIPT_DIR}"
+
   # `env -i` starts with an empty environment, so only the vars
   # explicitly passed are present.
   env_cmd=(env -i)
