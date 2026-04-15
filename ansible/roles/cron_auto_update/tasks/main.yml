@@ -1,4 +1,10 @@
 ---
+- name: Ensure cron is installed
+  ansible.builtin.package:
+    name: cron
+    state: present
+  become: true
+
 # To run weekly instead of daily:
 #   Set AUTO_UPDATE_FREQUENCY_DAYS: 7 in playbook vars or .env
 #
