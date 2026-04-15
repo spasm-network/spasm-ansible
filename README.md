@@ -1,5 +1,14 @@
 WIP: don't use in production yet. If you want to launch an instance now, then deploy using [docker/podman](https://github.com/spasm-network/spasm-docker). Once this repo is ready for prod, there will be a proper instruction and announcement.
 
+```bash
+# install git (e.g. Debian/Ubuntu)
+sudo apt install git
+
+git clone https://github.com/spasm-network/spasm-ansible ~/spasm-ansible/
+
+sudo bash ~/spasm-ansible/server-setup
+```
+
 # Ansible Server Setup &amp; Hardening Automation
 
 DESCRIPTION:
@@ -17,7 +26,6 @@ Includes roles:
 - user_and_groups — ensures a managed non-privileged user and a sudo-enabled admin account are present, creates an admin group with a sudoers drop-in, and enforces SSH-key-only access for regular users; idempotent and safe for repeated runs.
 - copy_files — copies SSH keys into user and the ansible repo into admin accounts, creating ~/.ssh and preserving ownership and permissions; optional and idempotent.
 - system_updates — distro-specific package upgrades + unattended-updates (deb/dnf/zypper), creates /var/run/reboot-required; reboots deferred to admin scripts.
-- auto-updates,
 - firewall_preopen — opens http (80) for ssl cert, https (443), and ssh ports (default 22 or custom via `NEW_SSH_PORT` env var) using firewalld; installs and starts firewalld but does not enable at boot;
 - SSH hardening role — backups original configs, idempotently applies secure settings (port, root/password auth, etc.), validates with `sshd -t`, verifies SSH listens on new port with retries, auto-rolls back on failure, locks root by default (opt-out), pre-checks that {{ user_name }} has SSH keys, logs to /var/log/ssh_hardening.log, runs after firewall_preopen and before firewall_enable, supports Debian/RHEL/SUSE.
 - firewall_enable — Enables firewalld, verifies `new_ssh_port` is open, ensures 80/443 accessible, removes stale ports, removes default `ssh` service if non-standard port. Runs after `sshd_hardening`.
@@ -123,7 +131,7 @@ root (initial setup only, minimal access after)
     ├── .env
     ├── import-gpg
     ├── verify-repo
-    ├── init.sh
+    ├── init
     └── server-setup
 
 user (runs docker/podman app, no sudo)
@@ -143,7 +151,7 @@ admin (infrastructure management, sudo access, no ssh)
     ├── .env
     ├── import-gpg
     ├── verify-repo
-    ├── init.sh
+    ├── init
     └── server-setup
 
 Other notes:
@@ -164,7 +172,7 @@ Auto-updates with Ansible are managed with scripts (not roles), but a role adds 
 
 1. Call `import-gpg` (ensure GPG key in keyring for root, admin, and user)
 2. Call `fetch-verify-repo` (clone to temp, verify, swap if good)
-3. Call `init.sh` (with or without `--auto-update`)
+3. Call `init` (with or without `--auto-update`)
 
 `import-gpg` script
 
@@ -181,37 +189,53 @@ Auto-updates with Ansible are managed with scripts (not roles), but a role adds 
 
 `fetch-verify-repo` script
 
-Fetches latest (or specified) semver git tag, verifies GPG signatures, and atomically swaps production repo.
+Fetches latest (or specified) semver git tag, verifies GPG signatures with ultimate trust, and atomically swaps production repo.
 
 **Verification steps:**
-1. Acquires lock to prevent concurrent runs
-2. Clones repo to secure temp directory (`/var/tmp/fetch-verify-repo-<timestamp>`)
-3. Fetches all tags and identifies latest semver tag (v1.2.3 format)
-4. Skips if production repo already at target tag (idempotent)
-5. Detects tag type: annotated (tag object) or lightweight (commit)
-6. Verifies GPG signature on tag (annotated) or commit (lightweight)
-7. Extracts signer key fingerprint and checks against allowlist
-8. Verifies GPG signature on commit the tag points to (defense in depth)
-9. Checks out verified tag in temp directory
-10. Final verification: ensures current commit is signed
-11. Atomically swaps temp repo into production (with cross-device fallback)
-12. Sets secure ownership (root:root) and permissions (750 dirs, 640 files, 750 scripts)
-13. On success: deletes backup, cleans up temp
-14. On failure: restores backup from temp, keeps temp for forensic debugging
+1. Acquires atomic lock to prevent concurrent runs (detects and removes stale locks)
+2. Validates GPG keyring (public keys only, correct ownership/permissions, no secret keys)
+3. Clones repo to secure temp directory (`/var/tmp/fetch-verify-repo-<timestamp>`)
+4. Fetches all tags and identifies latest semver tag (v1.2.3 format, no prerelease/build metadata)
+5. Skips if production repo already at target tag (idempotent)
+6. Rejects non-annotated (lightweight) tags — only signed annotated tag objects accepted
+7. Verifies GPG signature on annotated tag object
+8. Extracts signer fingerprint (canonical 40-hex form via `gpg --with-colons --fingerprint`)
+9. Ensures tag signer is in ultimate trust (via `gpg --export-ownertrust`)
+10. Verifies GPG signature on commit the tag points to (defense in depth)
+11. Ensures commit signer is in ultimate trust
+12. Checks for downgrade: rejects if target tag version ≤ installed tag version (semver comparison)
+13. Checks out verified tag in temp directory
+14. Validates critical scripts exist (`server-setup`, `import-gpg`, `init`, `fetch-verify-repo`)
+15. Scans for unexpected symlinks in fetched repo (symlink attack detection)
+16. Sets secure ownership (root:root) and permissions (750 dirs, 640 files, 750 scripts) before swap
+17. Final verification: ensures current commit is signed and ultimately trusted
+18. Atomically swaps temp repo into production (with cross-device fallback via staging)
+19. Post-swap integrity check: verifies critical files and commit hash match
+20. Stores installed version to `/var/lib/spasm-ansible/version` for robust downgrade protection
+21. On success: deletes backup, cleans up temp
+22. On failure: restores backup from temp, keeps temp for forensic debugging
 
-**Keyring & allowlist:**
+**Keyring & trust:**
 - Uses caller's GPG keyring (`~/.gnupg`); ensure `import-gpg` has been run first
-- Compares signer fingerprint against `ALLOWED_KEY_FPS` array (40-char hex, case-normalized)
-- Fails if signature is invalid or signer not in allowlist
+- Validates GNUPGHOME: must be directory (not symlink), owned by correct user, permissions 700, contains no secret keys
+- Relies on GPG trust database (ultimate trust only) — no hardcoded fingerprints
+- Fails if signature is invalid, signer not in keyring, or signer not in ultimate trust
+- Logs expected fingerprints on trust failures for operator debugging
+
+**Downgrade protection:**
+- Compares target tag version against installed tag (via `git describe` or stored version file)
+- Rejects downgrades using semver comparison (MAJOR.MINOR.PATCH)
+- Stored version file (`/var/lib/spasm-ansible/version`) provides fallback for repos deployed without git tags
+- Prevents attacker from deleting new tags and re-pushing old vulnerable commits
 
 **Usage:**
 ```bash
-bash scripts/fetch-verify-repo.sh              # Fetch and verify latest tag
-bash scripts/fetch-verify-repo.sh --tag v1.2.5 # Fetch and verify specific tag
-sudo bash scripts/fetch-verify-repo.sh         # Run as admin via sudo
+bash fetch-verify-repo.sh              # Fetch and verify latest tag
+bash fetch-verify-repo.sh --tag v1.2.5 # Fetch and verify specific tag
+sudo bash fetch-verify-repo.sh         # Run as admin via sudo
 ```
 
-`init.sh`
+`init`
 
 - Takes `--auto-update` flag (optional)
 - If `--auto-update`: read vars from `.env` (non-interactive)
@@ -227,18 +251,59 @@ Day 1 (Setup from root):
 2. git clone https://github.com/spasm-network/spasm-ansible.git ~/spasm-ansible/
 3. cd ~/spasm-ansible
 4. bash server-setup
-   - Calls import-gpg (imports key into root, admin, user keyrings; sets owner trust)
-   - Calls fetch-verify-repo (verifies repo using root's keyring; atomically swaps)
-   - Calls init.sh (runs playbook, creates admin/user accounts)
+   - Calls import-gpg (imports key into root, admin, user keyrings; sets owner trust to ultimate)
+   - Calls fetch-verify-repo (verifies repo using root's keyring; validates signatures; atomically swaps)
+   - Calls init (runs playbook, creates admin/user accounts)
 5. Wait for completion
 6. Server is live
 ```
 
 Day 4, 7, 10, etc. (Automatic):
 - Cron runs from root: `bash ~/spasm-ansible/server-setup --auto-update`
-  - Calls import-gpg (idempotent; key already present)
-  - Calls fetch-verify-repo (verifies latest tag using root's keyring; skips if already at tag)
-  - Calls init.sh (runs playbook with non-interactive vars from .env)
+  - Calls import-gpg (idempotent; key already present with ultimate trust)
+  - Calls fetch-verify-repo (verifies latest tag using root's keyring; skips if already at tag; rejects downgrades)
+  - Calls init (runs playbook with non-interactive vars from .env)
 - All autonomous, no operator interaction
 - On verification failure: keeps temp directory for debugging, restores backup, exits with error
 - On success: logs to `/var/log/spasm-ansible/fetch-verify-repo.log`
+
+### Security Model
+
+**Trust chain:**
+1. `import-gpg` imports your public key and sets ownertrust to ultimate (5)
+2. `fetch-verify-repo` verifies all signatures (tag + commit) are from ultimately-trusted key
+3. Only annotated, GPG-signed tags are accepted (lightweight tags rejected)
+4. Commit signatures verified for defense in depth (tag object + underlying commit)
+5. Downgrade protection prevents rollback to older vulnerable versions
+6. Symlink detection prevents symlink attacks during repo swap
+
+**Keyring isolation:**
+- Each user (root, admin, user) has isolated keyring (`~/.gnupg`)
+- Keyrings contain only public keys (no secret keys)
+- Permissions enforced (700 on GNUPGHOME)
+- Ownership validated (correct user owns their keyring)
+
+**Atomic operations:**
+- Lock directory prevents concurrent runs
+- Stale lock detection (checks PID) prevents permanent blocks
+- Staging directory ensures atomicity across filesystems
+- Post-swap integrity checks catch partial failures
+- Backup restoration on failure
+
+**Failure handling:**
+- On signature verification failure: keeps temp directory for forensic analysis
+- On swap failure: restores backup from temp
+- On partial copy: transactional restore logic handles incomplete state
+- Logs all failures with actionable error messages
+
+### Sign tags
+
+```bash
+git tag -s -m "v1.2.5" v1.2.5
+```
+
+
+
+
+
+
