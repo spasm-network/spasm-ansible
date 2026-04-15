@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
+# Orchestrator: import GPG key, fetch/verify repo, run init
 set -euo pipefail
 
-bash import-gpg
+echo "----------------------------------------------------"
+echo "Starting full server setup"
 
-bash fetch-verify-repo
+# Parse args
+AUTO_UPDATE=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --auto-update) AUTO_UPDATE=true; shift;;
+    *) echo "Unknown arg: $1"; exit 1;;
+  esac
+done
 
-bash init
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+bash "${SCRIPT_DIR}/import-gpg"
+
+bash "${SCRIPT_DIR}/fetch-verify-repo"
+
+if [[ "${AUTO_UPDATE}" == "true" ]]; then
+  bash "${SCRIPT_DIR}/init" --auto-update
+else
+  bash "${SCRIPT_DIR}/init"
+fi
+
+echo "Full server setup finished"
+echo "----------------------------------------------------"
