@@ -453,6 +453,14 @@ if find "${FETCH_DIR}" -type l 2>/dev/null | grep -q .; then
 fi
 log_msg "✓ No unexpected symlinks detected"
 
+# Preserve .env from production repo if it exists
+ENV_BACKUP=""
+if [[ -f "${PROD_REPO_DIR}/.env" ]]; then
+  ENV_BACKUP=$(mktemp)
+  cp "${PROD_REPO_DIR}/.env" "${ENV_BACKUP}"
+  log_msg "Backed up .env for restoration"
+fi
+
 # Atomic swap
 PROD_TEMP=$(mktemp -d /var/tmp/prod-repo-swap.XXXXXX)
 
@@ -494,6 +502,13 @@ if [[ "${PROD_COMMIT}" != "${COMMIT}" ]]; then
   exit 31
 fi
 log_msg "✓ Post-swap integrity verified"
+
+# Restore .env if it was backed up
+if [[ -n "${ENV_BACKUP}" && -f "${ENV_BACKUP}" ]]; then
+  cp "${ENV_BACKUP}" "${PROD_REPO_DIR}/.env"
+  rm -f "${ENV_BACKUP}"
+  log_msg "✓ Restored .env"
+fi
 
 # Store installed version
 mkdir -p "$(dirname "${PROD_VERSION_FILE}")"
