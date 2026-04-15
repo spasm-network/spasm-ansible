@@ -35,7 +35,7 @@
     day: "*/{{ AUTO_UPDATE_FREQUENCY_DAYS }}"
     hour: "{{ AUTO_UPDATE_HOUR }}"
     minute: "{{ AUTO_UPDATE_MINUTE }}"
-    job: "/usr/bin/flock -n {{ AUTO_UPDATE_LOCK_FILE }} /bin/bash {{ AUTO_UPDATE_SCRIPT }} --auto-update >> {{ AUTO_UPDATE_LOG_FILE }} 2>&1 || echo '[{{ ansible_date_time.iso8601 }}] auto-update lock held; skipping' >> {{ AUTO_UPDATE_LOG_FILE }}"
+    job: "/usr/bin/flock -n {{ AUTO_UPDATE_LOCK_FILE }} /bin/bash {{ AUTO_UPDATE_SCRIPT }} --auto-update >> {{ AUTO_UPDATE_LOG_FILE }} 2>&1 || echo 'auto-update lock held; skipping' >> {{ AUTO_UPDATE_LOG_FILE }}"
     user: root
     state: present
   become: true
