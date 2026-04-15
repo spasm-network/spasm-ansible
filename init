@@ -597,9 +597,13 @@ run_playbook() {
   env_cmd=(env -i)
 
   # Preserve essential vars for ansible to work
-  env_cmd+=(HOME="${HOME:-/root}")
-  env_cmd+=(PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}")
-  env_cmd+=(USER="${USER:-root}")
+  _user="${USER:-$(id -un)}"
+  _home="${HOME:-$(getent passwd "$_user" | cut -d: -f6)}"
+  _path="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+
+  env_cmd+=(USER="$_user")
+  env_cmd+=(HOME="$_home")
+  env_cmd+=(PATH="$_path")
 
   if [ -n "${USER_NAME:-}" ]; then
     env_cmd+=(USER_NAME="${USER_NAME}")
