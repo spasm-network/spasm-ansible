@@ -105,7 +105,7 @@ import_for_user() {
 
   # runuser: switches to target user without requiring sudoers config;
   # available on all systemd-based Linux distros (util-linux)
-  if ! runuser -u "${user}" -- gpg --batch --import "${KEY_FILE}"; then
+  if ! /usr/sbin/runuser -u "${user}" -- gpg --batch --import "${KEY_FILE}"; then
     echo "ERROR: gpg import failed for ${user}" >&2
     if [[ "${fatal}" == "true" ]]; then
       exit 4
@@ -114,13 +114,13 @@ import_for_user() {
   fi
 
   # Verify all fingerprints from key file are now present in user's keyring
-  mapfile -t FPRS < <(runuser -u "${user}" -- gpg --with-colons --with-fingerprint "${KEY_FILE}" 2>/dev/null \
+  mapfile -t FPRS < <(/usr/sbin/runuser -u "${user}" -- gpg --with-colons --with-fingerprint "${KEY_FILE}" 2>/dev/null \
     | awk -F: '$1=="fpr"{print $10}')
 
   for fp in "${FPRS[@]}"; do
-    if runuser -u "${user}" -- gpg --list-keys --with-colons "${fp}" >/dev/null 2>&1; then
+    if /usr/sbin/runuser -u "${user}" -- gpg --list-keys --with-colons "${fp}" >/dev/null 2>&1; then
       # Set owner trust to ultimate (5) so git verify-tag doesn't warn about untrusted key
-      echo "${fp}:5:" | runuser -u "${user}" -- gpg --import-ownertrust -
+      echo "${fp}:5:" | /usr/sbin/runuser -u "${user}" -- gpg --import-ownertrust -
       echo "  ✓ ${user}: ${fp:0:16}..."
     else
       echo "  ✗ ${user}: fingerprint missing after import" >&2
