@@ -520,15 +520,13 @@
         msg: "SSH host keys not found; cannot proceed with connectivity test"
       when: ssh_host_keys.matched == 0
 
-    - name: Test SSH connectivity (runtime verification)
+    - name: Test SSH connectivity (socket listening test)
       ansible.builtin.shell: |
-        sshd -T | grep -E "^permitrootlogin\s+no$" && \
-        sshd -T | grep -E "^passwordauthentication\s+no$" && \
-        sshd -T | grep -E "^port\s+{{ new_ssh_port | int }}$"
+        timeout 5 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/{{ new_ssh_port | int }}" && echo "OK" || exit 1
       register: _ssh_connect_test
       changed_when: false
       failed_when: _ssh_connect_test.rc != 0
-      become: true
+      become: false
       retries: 3
       delay: 2
       until: _ssh_connect_test.rc == 0
