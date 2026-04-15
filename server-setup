@@ -4,6 +4,7 @@ set -euo pipefail
 
 echo "----------------------------------------------------"
 echo "Starting full server setup"
+echo "Time UTC: $(date -u +"%Y-%m-%dT%H:%M:%S%z (%Z)")"
 
 # Parse args
 AUTO_UPDATE=false
@@ -15,6 +16,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "AUTO_UPDATE: ${AUTO_UPDATE}"
+echo "SCRIPT_DIR: ${SCRIPT_DIR}"
 
 # Change to safe directory immediately (cwd may be deleted during repo swap)
 cd "${SCRIPT_DIR}"
