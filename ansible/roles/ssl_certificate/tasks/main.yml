@@ -3,6 +3,14 @@
   debug:
     msg: "ssl_domain: {{ ssl_domain }}, ssl_nginx_conf: {{ ssl_nginx_conf }}"
 
+- name: Set role-wide environment variables
+  set_fact:
+    role_env:
+      PATH: "{{ ansible_env.PATH }}:/usr/sbin:/usr/local/sbin"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+  run_once: true
+
 - name: Ensure nginx is running and active (prerequisite)
   service:
     name: nginx
@@ -62,8 +70,7 @@
 
 - name: Test nginx configuration before certbot
   ansible.builtin.command: nginx -t
-  environment:
-    PATH: "{{ ansible_env.PATH }}:/usr/sbin:/usr/local/sbin"
+  environment: "{{ role_env }}"
   register: nginx_test_pre
   changed_when: false
   failed_when: nginx_test_pre.rc != 0
@@ -127,9 +134,7 @@
         chdir: /
       register: certbot_run
       failed_when: false
-      environment:
-        LANG: C.UTF-8
-        LC_ALL: C.UTF-8
+      environment: "{{ role_env }}"
 
     - name: Fail-fast on fatal certbot errors (rate limit, unauthorized, account problems)
       fail:
@@ -169,8 +174,7 @@
 
 - name: Test nginx configuration after certbot edits
   ansible.builtin.command: nginx -t
-  environment:
-    PATH: "{{ ansible_env.PATH }}:/usr/sbin:/usr/local/sbin"
+  environment: "{{ role_env }}"
   register: nginx_test
   changed_when: false
   failed_when: nginx_test.rc != 0
@@ -223,6 +227,7 @@
 
 - name: Test nginx configuration after certbot install
   command: nginx -t
+  environment: "{{ role_env }}"
   register: nginx_test_install
   failed_when: nginx_test_install.rc != 0
 
@@ -240,6 +245,7 @@
 
 - name: Determine certbot binary path for cron
   command: which certbot
+  environment: "{{ role_env }}"
   register: certbot_which
   changed_when: false
 
@@ -331,6 +337,7 @@
     fi
   args:
     executable: /bin/bash
+  environment: "{{ role_env }}"
   register: cert_expiry
   changed_when: false
 
