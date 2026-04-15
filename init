@@ -83,7 +83,7 @@ RETRY_SLEEP=5
 
 echo_env_variables() {
   echo "----------------------------------------------------"
-  echo "v0.1.15"
+  echo "v0.1.16"
   echo "Environment variables from .env file:"
   # echo "USER: ${USER}"
   # echo "ADMIN: ${ADMIN}"
@@ -98,7 +98,7 @@ get_domain_name() {
   if [[ "${NON_INTERACTIVE}" == "true" ]]; then
     if [ -n "${DOMAIN_NAME}" ]; then
       SITE_TLD="${DOMAIN_NAME}"
-      echo "Non-interactive: using DOMAIN_NAME from .env: ${ACCENT}${BOLD}${SITE_TLD}${NC}"
+      echo "Non-interactive: using DOMAIN_NAME from .env: ${SITE_TLD}"
     else
       echo "Non-interactive: DOMAIN_NAME not set in .env; proceeding without interactive input."
       SITE_TLD="${DOMAIN_NAME}"
@@ -275,7 +275,7 @@ get_admins() {
 
   if [[ "${NON_INTERACTIVE}" == "true" ]]; then
     if [ -n "${ADMINS}" ]; then
-      echo "Non-interactive: using ADMINS from .env: ${ACCENT}${BOLD}${ADMINS}${NC}"
+      echo "Non-interactive: using ADMINS from .env: ${ADMINS}"
     else
       echo "Non-interactive: ADMINS not set in .env; proceeding without interactive input."
     fi
@@ -597,9 +597,9 @@ run_playbook() {
   env_cmd=(env -i)
 
   # Preserve essential vars for ansible to work
-  env_cmd+=(HOME="${HOME}")
-  env_cmd+=(PATH="${PATH}")
-  env_cmd+=(USER="${USER}")
+  env_cmd+=(HOME="${HOME:-/root}")
+  env_cmd+=(PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}")
+  env_cmd+=(USER="${USER:-root}")
 
   if [ -n "${USER_NAME:-}" ]; then
     env_cmd+=(USER_NAME="${USER_NAME}")
