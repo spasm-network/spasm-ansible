@@ -119,9 +119,25 @@
   failed_when: false
   become: true
 
+- name: Debug raw sshd -T output
+  ansible.builtin.debug:
+    msg: |
+      sshd -T command rc: {{ _sshd_T.rc }}
+      sshd -T stdout (first 20 lines):
+      {{ _sshd_T.stdout_lines[0:20] | join('\n') }}
+
 - name: Parse effective port from sshd -T (default 22 if not present)
   ansible.builtin.set_fact:
-    _effective_ssh_port: "{{ (_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')).split() | int }}"
+    _effective_ssh_port: "{{ ((_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')).split() | last) | int }}"
+
+- name: Debug port parsing details
+  ansible.builtin.debug:
+    msg: |
+      Filtered port lines: {{ _sshd_T.stdout_lines | select('match','^port\\s+') | list }}
+      First port line: {{ (_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')) }}
+      After split: {{ (_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')).split() }}
+      Last element: {{ (_sshd_T.stdout_lines | select('match','^port\\s+') | list | first | default('port 22')).split() | last }}
+      Final _effective_ssh_port: {{ _effective_ssh_port }}
 
 - name: Debug effective SSH port
   ansible.builtin.debug:
