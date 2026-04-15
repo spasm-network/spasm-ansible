@@ -16,9 +16,15 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Change to safe directory immediately (cwd may be deleted during repo swap)
+cd "${SCRIPT_DIR}"
+
 bash "${SCRIPT_DIR}/import-gpg"
 
 bash "${SCRIPT_DIR}/fetch-verify-repo"
+
+# Change to safe directory again after swap (cwd may have been deleted)
+cd "${SCRIPT_DIR}"
 
 if [[ "${AUTO_UPDATE}" == "true" ]]; then
   bash "${SCRIPT_DIR}/init" --auto-update
