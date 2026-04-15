@@ -11,7 +11,7 @@ export LC_ALL=C
 export GPG_TTY=""
 export GNUPG_NO_PINENTRY=1
 
-REPO_URL="https://github.com/spasm-network/spasm-ansible.git"
+REPO_URL="https://github.com/spasm-network/spasm-ansible"
 PROD_REPO_DIR="${HOME}/spasm-ansible"
 PROD_VERSION_FILE="/var/lib/spasm-ansible/version"
 LOGS_DIR="/var/log/spasm-ansible"
