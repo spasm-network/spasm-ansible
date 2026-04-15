@@ -446,14 +446,6 @@ if find "${FETCH_DIR}" -type l 2>/dev/null | grep -q .; then
 fi
 log_msg "✓ No unexpected symlinks detected"
 
-# Set ownership and permissions
-log_msg "Setting ownership and permissions on fetched repo..."
-chown -R root:root "${FETCH_DIR}"
-find "${FETCH_DIR}" -type d -exec chmod 750 {} \;
-find "${FETCH_DIR}" -type f -exec chmod 640 {} \;
-find "${FETCH_DIR}" -type f \( -path "*/scripts/*" -o -name "server-setup" -o -name "import-gpg" -o -name "init" -o -name "fetch-verify-repo" \) -exec chmod 750 {} \;
-log_msg "✓ Ownership and permissions set"
-
 # Atomic swap
 PROD_TEMP=$(mktemp -d /var/tmp/prod-repo-swap.XXXXXX)
 
