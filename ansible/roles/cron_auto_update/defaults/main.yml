@@ -6,8 +6,8 @@
 AUTO_UPDATE_FREQUENCY_DAYS: 1
 
 # Cron job time (UTC)
-AUTO_UPDATE_HOUR: "23"
-AUTO_UPDATE_MINUTE: "58"
+AUTO_UPDATE_HOUR: "00"
+AUTO_UPDATE_MINUTE: "20"
 
 AUTO_UPDATE_SCRIPT: "/root/spasm-ansible/server-setup"
 AUTO_UPDATE_LOG_DIR: "/var/log/spasm-ansible"
