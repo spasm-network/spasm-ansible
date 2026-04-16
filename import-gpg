@@ -151,7 +151,7 @@ if [[ "${CALLER_UID}" -eq 0 ]]; then
     if [[ "${managed_user}" == "${CALLER_USER}" ]]; then
       continue
     fi
-    import_for_user "${managed_user}" "false"
+    import_for_user "${managed_user}" "false" || true
   done
 
 else
