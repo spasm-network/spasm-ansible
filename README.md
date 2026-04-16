@@ -2,7 +2,7 @@ WIP: don't use in production yet. If you want to launch an instance now, then de
 
 ```bash
 # install git (e.g. Debian/Ubuntu)
-sudo apt install git
+sudo apt -y install git
 
 git clone https://github.com/spasm-network/spasm-ansible ~/spasm-ansible/
 
