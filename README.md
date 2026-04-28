@@ -1,5 +1,7 @@
 ## Spasm forum full server setup
 
+Mirrors: [Forgejo](https://git.spasm.network/spasm-network/spasm-ansible) [Codeberg](https://codeberg.org/spasm-network/spasm-ansible) [Github](https://github.com/spasm-network/spasm-ansible)
+
 Deploy your [Spasm](https://spasm.network) forum on a new VPS with a single script that handles everything automatically: industry-standard hardening, app installation with Podman, and auto-updates. Enjoy a fully autonomous setup that requires zero server maintenance.
 
 *Note: use [spasm-docker](https://github.com/spasm-network/spasm-docker) repo to launch Spasm on an existing server alongside other apps.*
