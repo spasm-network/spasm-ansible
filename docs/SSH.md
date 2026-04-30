@@ -1,40 +1,28 @@
 ## SSH guide
 
-##### Add your SSH .pub to your VPS provider
+##### Generate an SSH key
+
+```shell
+# Generate SSH key with a comment "YOUR_NAME" on your home machine.
+ssh-keygen -t ed25519 -C "YOUR_NAME"
+```
+
+##### Add your SSH pubkey to your VPS provider
 
 Upload the SSH key generated above into the SSH form while setting up
 your server, so you can log into the server without a password.
 
 On Linux SSH .pub is usually located at `~/.ssh/YOUR_NAME.pub`
 
-Manually copy the content of `YOUR_NAME.pub` to clipboard
-using a text editor, e.g.:
-
 ```shell
+# Copy the pubkey to clipboard using a text editor
 nano ~/.ssh/user.pub
-```
 
-Or from the terminal, e.g.:
-
-```shell
+# Or copy from the terminal
 cat ~/.ssh/user.pub
 ```
 
-Or with a `wl-copy` command if wl-clipboard is installed, e.g.:
-
-```shell
-wl-copy < ~/.ssh/user.pub
-```
-
 Open your VPS provider and paste your SSH pub key into an SSH form.
-
-*Note: it's important to use SSH keys because the password authentication
-will be disabled by one of the following setup scripts.*
-
-##### Testing in VM
-
-If you're testing the app locally in a virtual machine (VM),
-then paste your SSH key into `/root/.ssh/authorized_keys`
 
 ##### SSH into your server
 
