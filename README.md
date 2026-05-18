@@ -30,6 +30,6 @@ git clone https://github.com/spasm-network/spasm-ansible ~/spasm-ansible/
 sudo bash ~/spasm-ansible/server-setup
 ```
 
-The script asks for your domain name (or IP), Ethereum or Nostr address/pubkey, password of a user "admin" (created during the setup) to enable manual interventions (normally, it's not needed since the server is designed to run autonomously).
+The script asks for your domain name, Ethereum or Nostr address/pubkey, a new password for server's "admin" user (created during the setup) to enable manual interventions (normally, it's not needed since the server is designed to run autonomously).
 
 Your forum will be live after the script finishes execution, which takes about 10 minutes.
