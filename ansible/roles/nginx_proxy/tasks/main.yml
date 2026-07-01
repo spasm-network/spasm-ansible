@@ -71,6 +71,10 @@
   set_fact:
     certs_present: "{{ (nginx_ssl_enabled | default(false)) and (ssl_cert_path | length > 0) and (ssl_cert_stat is defined and ssl_cert_stat.stat.exists) }}"
 
+- name: print nginx-ssl variables
+  debug:
+    msg: "nginx_ssl_enabled: {{ nginx_ssl_enabled }}, ssl_cert_path: {{ ssl_cert_path }}, ssl_cert_stat: {{ ssl_cert_stat }}, certs_present: {{ certs_present }}"
+
 - name: Fail if http_redirect_to_https requested but certs not present
   fail:
     msg: "http_redirect_to_https is true but TLS certs are not present (ssl_cert_path missing or not found)."
