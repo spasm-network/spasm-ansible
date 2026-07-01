@@ -116,11 +116,23 @@
   register: cert_status
   changed_when: false
 
-- name: Remove existing certificate directory (allow certbot to replace)
-  file:
-    path: "{{ ssl_cert_path }}"
-    state: absent
-  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+# Removing a folder, but keeping /renewal/example.com.conf leads
+# to certbot creating a new lineage like 'example.com-0001', which
+# breaks the logic. If we don't delete the folder with an existing
+# certificate, then certbot should simply renew the certificate.
+# - name: Remove existing certificate directory (allow certbot to replace)
+#   file:
+#     path: "{{ ssl_cert_path }}"
+#     state: absent
+#   when: cert_status.stdout in ["EXPIRING", "MISSING"]
+
+- name: Renew certificate if it is expiring
+  command: "{{ certbot_path.stdout }} renew --noninteractive"
+  register: certbot_renew_result
+  changed_when: "'Certificate not due for renewal' not in certbot_renew_result.stdout"
+  failed_when: false
+  # Only run if the cert directory EXISTS (meaning we are not on first run)
+  when: cert_status.stdout != "MISSING"
 
 - name: Request/Install certificate with certbot --nginx (installer, auto edits)
   block:
@@ -161,7 +173,7 @@
       delay: 5
       when: certbot_run.rc != 0 and not (certbot_run.stderr is search("rate limited|too many requests|Too many"))
 
-  when: cert_status.stdout in ["EXPIRING", "MISSING"]
+  when: cert_status.stdout in ["MISSING"]
 
 - name: Backup current nginx config timestamped if certbot changed it (post-run)
   copy:

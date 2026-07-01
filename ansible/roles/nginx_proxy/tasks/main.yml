@@ -1,7 +1,7 @@
 ---
-- name: print nginx variables
+- name: print nginx-ssl variables at the start of the role
   debug:
-    msg: "nginx_site_name: {{ nginx_site_name }}, nginx_upstream_host: {{ nginx_upstream_host }}"
+    msg: "nginx_site_name: {{ nginx_site_name }}, nginx_upstream_host: {{ nginx_upstream_host }}, nginx_ssl_enabled: {{ nginx_ssl_enabled }}, ssl_cert_path: {{ ssl_cert_path }}, ssl_key_path: {{ ssl_key_path }}"
 
 - name: Include distro-specific package install
   include_tasks: "install_{{ ansible_os_family | lower }}.yml"
@@ -71,7 +71,7 @@
   set_fact:
     certs_present: "{{ (nginx_ssl_enabled | default(false)) and (ssl_cert_path | length > 0) and (ssl_cert_stat is defined and ssl_cert_stat.stat.exists) }}"
 
-- name: print nginx-ssl variables
+- name: print nginx-ssl variables after certs_present fact check
   debug:
     msg: "nginx_ssl_enabled: {{ nginx_ssl_enabled }}, ssl_cert_path: {{ ssl_cert_path }}, ssl_cert_stat: {{ ssl_cert_stat }}, certs_present: {{ certs_present }}"
 
