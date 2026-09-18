@@ -276,11 +276,13 @@ Day 4, 7, 10, etc. (Automatic):
 ### Sign tags
 
 ```bash
-git tag -s -m "v1.2.5" v1.2.5
+# sign
+git tag -s -m "v0.1.34" v0.1.34
+
+# push all (commits and tags)
+git push --follow-tags
+
+# or push only tags
+git push --tags
 ```
-
-
-
-
-
 
