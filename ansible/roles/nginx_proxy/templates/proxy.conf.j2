@@ -82,7 +82,7 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    # http2 on;
+    http2 on;
 
     server_name {% if domain_list is defined and domain_list|length > 0 %}{{ domain_list | join(' ') }};{% else %}_;{% endif %}
 
